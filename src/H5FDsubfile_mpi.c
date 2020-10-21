@@ -1942,6 +1942,10 @@ close__subfiles(
     /* The map from fid to context can now be cleared */
     clear_fid_map_entry(fid);
 
+
+
+
+
     for (i = 0; i < n_io_concentrators; i++) {
         int64_t msg[3] = {0, 0, sf_context->sf_context_id};
         status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], CLOSE_OP,
@@ -1976,10 +1980,11 @@ close__subfiles(
     }
 
     if (sf_context->topology->rank_is_ioc) {
-        finalize_ioc_threads();
         wait_for_thread_main();
+        finalize_ioc_threads();
     }
 
+	usleep(50);
     status = MPI_Allreduce(
         &errors, &global_errors, 1, MPI_INT, MPI_SUM, sf_context->sf_data_comm);
 
@@ -2147,57 +2152,6 @@ open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
 	}
 
 	return open_failure;
-
-#if 0
-    for (i = 0; i < n_io_concentrators; i++) {
-        int64_t msg[3] = {flags, fid, sf_context->sf_context_id};
-
-#ifndef NDEBUG
-        if (sf_verbose_flag) {
-            if (sf_logfile) {
-                fprintf(sf_logfile, "[%d] file open request (flags = %0lx)\n",
-                    sf_world_rank, msg[0]);
-            }
-        }
-#endif
-        /* Send the open_op message to an IOC */
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], OPEN_OP,
-            sf_context->sf_msg_comm);
-
-        /* Check for errors */
-        if (status == MPI_SUCCESS) {
-            /* And post a receive for the open file ACK */
-            status = MPI_Irecv(&ioc_acks[i], 1, MPI_INT, io_concentrator[i],
-                COMPLETED, sf_context->sf_data_comm, &reqs[i]);
-        }
-
-        if (status != MPI_SUCCESS) {
-            printf("[%d] MPI close_subfiles failure!", sf_world_rank);
-        } else
-            n_waiting++;
-    } /* END - for loop */
-
-    /* Wait for all (n_waiting) ACK messages to be received */
-    while (n_waiting) {
-        int ready = 0;
-        status = MPI_Waitsome(
-            n_io_concentrators, reqs, &ready, indices, MPI_STATUSES_IGNORE);
-        if (status != MPI_SUCCESS) {
-            int  len;
-            char estring[MPI_MAX_ERROR_STRING];
-            MPI_Error_string(status, estring, &len);
-            printf("[%d %s] MPI_ERROR! MPI_Waitsome returned an error(%s)\n",
-                sf_world_rank, __func__, estring);
-            fflush(stdout);
-        }
-
-        for (i = 0; i < ready; i++) {
-            n_waiting--;
-        }
-    } /* END - while */
-    return 0;
-#endif
-
 }
 
 /*-------------------------------------------------------------------------
