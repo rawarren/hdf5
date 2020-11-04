@@ -1883,6 +1883,7 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     hid_t under_fapl_id = -1;
 	void *ret_value = NULL;
     void *under = NULL;
+	double t_start, t_end, h5_time;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
     printf("------- SUBFILING VOL FILE Create\n");
@@ -1902,7 +1903,11 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     H5Pset_vol(under_fapl_id, info->under_vol_id, info->under_vol_info);
 
     /* Open the file with the underlying VOL connector */
+	t_start = MPI_Wtime();
     under = H5VLfile_create(name, flags, fcpl_id, under_fapl_id, dxpl_id, req);
+	t_end = MPI_Wtime();
+	h5_time = t_end - t_start;
+
     if(under) {
 		int mpi_enabled = 0;
 		int open_flags = O_RDWR;
@@ -1945,6 +1950,7 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 		}
 
 		if (file != NULL) {
+#if 0
 			dir_path = strrchr(name,'/');
 			if (dir_path) {
 				*dir_path = '\0';
@@ -1955,7 +1961,9 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 			else {
 				dir_path = getcwd(file_prefix, PATH_MAX);
 			}
+#endif
 			/* Only open subfiling if we've enabled MPI */
+			t_start = MPI_Wtime();
 			if (mpi_enabled && (sf_open_subfiles(h5_file_id, name, dir_path, open_flags) < 0)) {
 				file = NULL;
             }
@@ -1963,6 +1971,12 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 				subfiling_file->h5_file_id = h5_file_id;
 				subfiling_file->file_name = strdup(name);
 			}
+			t_end = MPI_Wtime();
+			if (subfiling_file->my_rank == 0) {
+				printf("FILE_CREATE times(h5_time=%lf, sf_time=%lf)\n", h5_time, (t_end - t_start));
+				fflush(stdout);
+			}
+
 		}
     } /* end if */
     else
@@ -2003,6 +2017,7 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     hid_t under_fapl_id = -1;
 	void *ret_value = NULL;
     void *under = NULL;
+	double t_start, t_end, h5_time;
 	
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
     printf("------- SUBFILING VOL FILE Open\n");
@@ -2022,7 +2037,11 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     H5Pset_vol(under_fapl_id, info->under_vol_id, info->under_vol_info);
 
     /* Open the file with the underlying VOL connector */
+	t_start = MPI_Wtime();
     under = H5VLfile_open(name, flags, under_fapl_id, dxpl_id, req);
+	t_end = MPI_Wtime();
+	h5_time = t_end - t_start;
+
     if(under) {
 		int mpi_enabled = 0;
 		int open_flags = O_RDWR;
@@ -2063,6 +2082,7 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
 		}
 
 		if (file != NULL) {
+#if 0
 			dir_path = strrchr(name,'/');
 			if (dir_path) {
 				*dir_path = '\0';
@@ -2073,7 +2093,8 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
 			else {
 				dir_path = getcwd(file_prefix, PATH_MAX);
 			}
-
+#endif
+			t_start = MPI_Wtime();
 			/* Only open subfiling if we've enabled MPI */
 			if (mpi_enabled && (sf_open_subfiles(h5_file_id, name, dir_path, open_flags) < 0)) {
 				file = NULL;
@@ -2081,6 +2102,11 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
 			else {
 				subfiling_file->h5_file_id = h5_file_id;
 				subfiling_file->file_name = strdup(name);
+			}
+			t_end = MPI_Wtime();
+			if (subfiling_file->my_rank == 0) {
+				printf("FILE_OPEN times(h5_time=%lf, sf_time=%lf)\n", h5_time, (t_end - t_start));
+				fflush(stdout);
 			}
 		}
 		

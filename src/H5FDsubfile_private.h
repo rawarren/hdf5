@@ -3,6 +3,7 @@
 /********************/
 
 #include <assert.h>
+#include <libgen.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>

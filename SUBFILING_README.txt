@@ -75,7 +75,14 @@ MODULE LOADS::
 rawarren@cori06:~> module load gcc/9.3.0
 rawarren@cori06:~> module load openmpi/4.0.2
 
+Enabling the Subfiling VOL by setting the following environment variables.
+Before doing anything else, change the working directory to the location where
+the HDF5 subfiling shared libraries have been installed, e.g.
+cd $HOME/lib
 
+export HDF5_VOL_CONNECTOR="subfiling under_vol=0;under_info={};"
+export HDF5_PLUGIN_PATH=`pwd`
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:`pwd`
 
-
+At this point the user should be able to compile and run test applications.
 
