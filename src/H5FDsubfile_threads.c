@@ -104,7 +104,7 @@ ioc_thread_main(void *arg)
 int
 initialize_ioc_threads(subfiling_context_t *sf_context)
 {
-    int      status;
+    int      status = 0;
     unsigned int thread_pool_count = HG_TEST_NUM_THREADS_DEFAULT;
     int64_t *context_id = (int64_t *) malloc(sizeof(int64_t));
     int      world_size = sf_context->topology->world_size;
@@ -170,9 +170,10 @@ initialize_ioc_threads(subfiling_context_t *sf_context)
         puts("hg_thread_create failed");
         goto err_exit;
     }
-    return 0;
+	return 0;
 
 err_exit:
+
     return -1;
 }
 

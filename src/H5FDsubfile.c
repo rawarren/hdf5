@@ -275,6 +275,7 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     int64_t *sf_context)
 {
     herr_t               ret_value = SUCCEED;
+	int                  status = 0, global_status = 0;
     int                  ioc_count;
     int                  world_rank, world_size;
     sf_topology_t *      thisApp = NULL;
@@ -315,19 +316,25 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     }
 
     if (newContext->topology->rank_is_ioc) {
-        int status = initialize_ioc_threads(newContext);
-        if (status)
-            goto done;
+        if ((status = initialize_ioc_threads(newContext)) < 0) {
+			ret_value = FAIL;
+			goto done;
+		}
     }
 
     if (context_id < 0) {
         ret_value = FAIL;
-
         goto done;
     }
     *sf_context = context_id;
 
 done:
+	status = (int) (ret_value == FAIL ? 1 : 0);
+	/* SUCCEED == 0; which means the SUM will reflect any errors.
+	 * Only a global success will return SUCCEED to the caller...
+	 */
+	MPI_Allreduce(&status, &ret_value, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
     FUNC_LEAVE_API(ret_value)
 
     return ret_value;

@@ -1,4 +1,4 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  * Copyright by The HDF Group.                                               *
  * Copyright by the Board of Trustees of the University of Illinois.         *
  * All rights reserved.                                                      *
@@ -33,7 +33,7 @@ FILE *sf_logfile = NULL;
 
 int sf_shutdown_flag = 0;
 
-const char *sf_subfile_prefix = ".";
+static char *sf_subfile_prefix = NULL;
 
 #define MAX_WORK_PER_RANK 2
 
@@ -195,6 +195,148 @@ count_nodes(sf_topology_t *info)
     info->node_index = hostid_index;
     return info->node_count = node_count;
 }
+
+/*
+ * A local allgather implementation which tries to be over-subscription "friendly".
+ * This is used to minimize CPU utilization while waiting for the IO Concentrator
+ * thread(s) to open subfiles.
+ */
+static int
+NODE_Allgather(void *s_data, int s_count, MPI_Datatype s_type, void *r_data, int r_count, MPI_Datatype r_type, MPI_Comm comm)
+{
+    int k, s_typesize, r_typesize;
+    int i, my_rank, my_size;
+    int errors = 0;
+    int n_waiting = 0;
+
+    MPI_Request *s_req, *r_req;
+    MPI_Comm_size(comm, &my_size);
+    MPI_Comm_rank(comm, &my_rank);
+
+    MPI_Type_size(s_type, &s_typesize);
+    MPI_Type_size(r_type, &r_typesize);
+    if (s_typesize != r_typesize) {
+        printf("Unmatched datatype sizes, st=%d, rt=%d\n", s_typesize, r_typesize );
+        errors++;
+    }
+    s_req = (MPI_Request *)malloc((size_t)my_size * sizeof(MPI_Request) * 2);
+    r_req = &s_req[my_size];
+    switch(s_typesize) {
+    case 1: {
+        char *sc_data = (char *)s_data;
+        char *rc_data = (char *)r_data;
+        for (k=0, i = my_rank; k < my_size; i++, k++) {
+            if (i == my_size) i=0;
+            if (i == my_rank) {
+                rc_data[i] = sc_data[0];
+                s_req[i] = MPI_REQUEST_NULL;
+                r_req[i] = MPI_REQUEST_NULL;
+            }
+            else {
+                MPI_Irecv(&rc_data[i], r_count, MPI_BYTE, i, 0xc011, comm, &r_req[i]);
+                MPI_Issend(&sc_data[0], s_count, MPI_BYTE, i, 0x0c011, comm, &s_req[i]);
+                n_waiting += 2;
+            }
+        }
+        break;
+    }
+    case 2: {
+        short *ss_data = (short *)s_data;
+        short *rs_data = (short *)r_data;
+        for (k=0, i = my_rank; k < my_size; i++, k++) {
+            if (i == my_size) i=0;
+            if (i == my_rank) {
+                rs_data[i] = ss_data[0];
+                s_req[i] = MPI_REQUEST_NULL;
+                r_req[i] = MPI_REQUEST_NULL;
+                n_waiting += 2;
+            }
+            else {
+                MPI_Irecv(&rs_data[i], r_count, MPI_SHORT_INT, i, 0xc011, comm, &r_req[i]);
+                MPI_Issend(&ss_data[0], s_count, MPI_SHORT_INT, i, 0x0c011, comm, &s_req[i]);
+                n_waiting += 2;
+            }
+        }
+        break;
+    }
+    case 4: {
+        uint32_t *uis_data = (uint32_t *)s_data;
+        uint32_t *uir_data = (uint32_t *)r_data;
+        for (k=0, i = my_rank; k < my_size; i++, k++) {
+            if (i == my_size) i=0;
+            if (i == my_rank) {
+                uir_data[i] = uis_data[0];
+                s_req[i] = MPI_REQUEST_NULL;
+                r_req[i] = MPI_REQUEST_NULL;
+            }
+            else {
+                MPI_Irecv(&uir_data[i], r_count, MPI_INT, i, 0xc011, comm, &r_req[i]);
+                MPI_Issend(&uis_data[0], s_count, MPI_INT, i, 0x0c011, comm, &s_req[i]);
+                n_waiting += 2;
+            }
+        }
+        break;
+    }
+    case 8: {
+        uint64_t *ulls_data = (uint64_t *)s_data;
+        uint64_t *ullr_data = (uint64_t *)r_data;
+        for (k=0, i = my_rank; k < my_size; i++, k++) {
+            if (i == my_size) i=0;
+            if (i == my_rank) {
+                ullr_data[i] = ulls_data[0];
+                s_req[i] = MPI_REQUEST_NULL;
+                r_req[i] = MPI_REQUEST_NULL;
+            }
+            else {
+                MPI_Irecv(&ullr_data[i], 1, MPI_LONG_LONG, i, 0xc011, comm, &r_req[i]);
+                MPI_Issend(&ulls_data[0], 1, MPI_LONG_LONG, i, 0x0c011, comm, &s_req[i]);
+                n_waiting += 2;
+            }
+        }
+        break;
+    }
+    default: {
+        char *sc_data = (char *)s_data;
+        char *rc_data = (char *)r_data;
+
+        for (k=0, i = my_rank; k < my_size; i++, k++) {
+            size_t offset;
+            if (i == my_size) i=0;
+            offset = (size_t)(s_typesize * i);
+            if (i == my_rank) memcpy(&rc_data[offset],sc_data, (size_t)s_typesize);
+            else {
+                MPI_Irecv(&rc_data[offset], 1, r_type, i, 0x0c011, comm, &r_req[i]);
+                MPI_Issend(&sc_data[0], 1, s_type, i, 0x0c011, comm, &s_req[i]);
+                n_waiting += 2;
+            }
+        }
+        break;
+    }
+    } /* End switch */
+
+    while (n_waiting) {
+        int ready = 0;
+        useconds_t delay = (useconds_t)(6 * my_size);
+        int total_count = my_size * 2;
+        int index = 0;
+
+        int status = MPI_Testany(total_count, s_req, &index, &ready, MPI_STATUS_IGNORE);
+        if (status != MPI_SUCCESS) {
+            printf("MPI_Waitsome failed!\n");
+            errors++;
+            break;
+        }
+        if (!ready)
+            usleep(delay);
+        else
+            n_waiting--;
+    }
+
+    if (s_req) free(s_req);
+    if (errors) return -1;
+    return 0;
+}
+
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__determine_ioc_count
@@ -1078,7 +1220,8 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
         newContext->topology = thisApp;
         newContext->sf_msg_comm = sf_msg_comm;
         newContext->sf_data_comm = sf_data_comm;
-        newContext->sf_group_comm = MPI_COMM_NULL;
+        newContext->sf_ioc_group_comm = MPI_COMM_NULL;
+        newContext->sf_node_local_comm = MPI_COMM_NULL;
         newContext->sf_intercomm = MPI_COMM_NULL;
         newContext->sf_stripe_size = DEFAULT_STRIPE_SIZE;
         newContext->sf_write_count = 0;
@@ -1090,7 +1233,7 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
                 newContext->sf_stripe_size = (int64_t) value_check;
             }
         }
-        if ((envValue = getenv("SUBFILE_PREFIX")) != NULL) {
+        if ((envValue = getenv("IOC_SUBFILE_DIR")) != NULL) {
             char temp[PATH_MAX];
             sprintf(temp, "%s", envValue);
             newContext->subfile_prefix = strdup(temp);
@@ -1119,17 +1262,26 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
                 goto err_exit;
             sf_data_comm = newContext->sf_data_comm;
         }
+
+        /* Create a node_local communicator::
+         * We can use this for some local collectives.
+         */
+        status = MPI_Comm_split(MPI_COMM_WORLD, thisApp->node_index,
+                                world_rank, &newContext->sf_node_local_comm);
+        if (status != MPI_SUCCESS)
+            goto err_exit;
+
         if (n_iocs > 1) {
             status = MPI_Comm_split(MPI_COMM_WORLD, thisApp->rank_is_ioc,
-                world_rank, &newContext->sf_group_comm);
+                world_rank, &newContext->sf_ioc_group_comm);
             if (status != MPI_SUCCESS)
                 goto err_exit;
             status = MPI_Comm_size(
-                newContext->sf_group_comm, &newContext->sf_group_size);
+                newContext->sf_ioc_group_comm, &newContext->sf_group_size);
             if (status != MPI_SUCCESS)
                 goto err_exit;
             status = MPI_Comm_rank(
-                newContext->sf_group_comm, &newContext->sf_group_rank);
+                newContext->sf_ioc_group_comm, &newContext->sf_group_rank);
             if (status != MPI_SUCCESS)
                 goto err_exit;
             /*
@@ -1137,7 +1289,7 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
              * If so, then can probably initialize those things here!
              */
         } else {
-            newContext->sf_group_comm = MPI_COMM_SELF;
+            newContext->sf_ioc_group_comm = MPI_COMM_SELF;
             newContext->sf_group_size = 1;
             newContext->sf_group_rank = 0;
         }
@@ -1206,7 +1358,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * if we extend out delaying tactic when awaiting
          * responses.
          */
-        delay *= sf_context->topology->world_size;
+        delay *= (useconds_t)sf_context->topology->world_size;
     }
 
     io_concentrator = sf_context->topology->io_concentrator;
@@ -1445,7 +1597,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t      ioc_write_datasize[n_io_concentrators];
     int64_t      ioc_write_offset[n_io_concentrators];
     MPI_Datatype ioc_write_type[n_io_concentrators];
-	int          n_waiting = 0, status = 0, errors = 0;
+    int          n_waiting = 0, status = 0, errors = 0;
     int          i, target, ioc;
     useconds_t   delay = 100;
 
@@ -1461,7 +1613,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * if we extend out delaying tactic when awaiting
          * responses.
          */
-        delay *= sf_context->topology->world_size;
+        delay *= (useconds_t)sf_context->topology->world_size;
     }
 
     /* The following function will initialize the collection of IO transfer
@@ -1790,6 +1942,10 @@ close__subfiles(
     /* The map from fid to context can now be cleared */
     clear_fid_map_entry(fid);
 
+
+
+
+
     for (i = 0; i < n_io_concentrators; i++) {
         int64_t msg[3] = {0, 0, sf_context->sf_context_id};
         status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], CLOSE_OP,
@@ -1824,10 +1980,11 @@ close__subfiles(
     }
 
     if (sf_context->topology->rank_is_ioc) {
-        finalize_ioc_threads();
         wait_for_thread_main();
+        finalize_ioc_threads();
     }
 
+    usleep(50);
     status = MPI_Allreduce(
         &errors, &global_errors, 1, MPI_INT, MPI_SUM, sf_context->sf_data_comm);
 
@@ -1866,11 +2023,11 @@ sf_close_subfiles(hid_t fid)
 /*-------------------------------------------------------------------------
  * Function:    Internal open__subfiles
  *
- * Purpose:     While we cannot know a priori, whether an HDF client will
+ * Purpose:     While we cannot know a priori whether an HDF client will
  *              need to access data across the entirety of a file, e.g.
  *              an individual MPI rank may read or write only small
- *              segments of the entire file space; this function sends
- *              a file OPEN_OP to every IO concentrator.
+ *              segments of the entire file space.  This function results
+ *              in a file OPEN_OP on every IO concentrator.
  *
  *              Prior to opening any subfiles, the H5FDopen will have
  *              created an HDF5 file with the user specified naming.
@@ -1900,26 +2057,17 @@ sf_close_subfiles(hid_t fid)
 
 static int
 open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
-    hid_t fid, char *prefix, int flags)
+    hid_t fid, int flags)
 {
     int         i, ret, status, n_waiting = 0;
-    int *       io_concentrator = NULL;
+    int         open_failure = 0;
+    int *       node_local_status = NULL;
+    // int *       io_concentrator = NULL;
     int         indices[n_io_concentrators];
     int         ioc_acks[n_io_concentrators];
     MPI_Request reqs[n_io_concentrators];
 
     assert(sf_context != NULL);
-
-    if (prefix) {
-        if (sf_context->subfile_prefix) {
-            if (strcmp(sf_context->subfile_prefix, prefix) != 0) {
-                sf_context->subfile_prefix = strdup(prefix);
-            }
-        } else {
-            sf_context->subfile_prefix = strdup(prefix);
-        }
-        sf_subfile_prefix = sf_context->subfile_prefix;
-    }
 
     /*
      * Save the HDF5 file id (fid) to subfile context mapping.
@@ -1937,56 +2085,62 @@ open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
      * grab the mapping of IO concentrator to MPI ranks for our
      * messaging loop.
      */
-    io_concentrator = sf_context->topology->io_concentrator;
+    // io_concentrator = sf_context->topology->io_concentrator;
+    node_local_status = (int *)calloc((size_t)sf_context->topology->local_peers, sizeof(int));
+    if (node_local_status == NULL) {
+        perror("calloc");
+    }
 
-    for (i = 0; i < n_io_concentrators; i++) {
+    /* MPI ranks which also host an IOC will invoke the OPEN RPC */
+    if (sf_context->topology->rank_is_ioc) {
         int64_t msg[3] = {flags, fid, sf_context->sf_context_id};
 
-#ifndef NDEBUG
-        if (sf_verbose_flag) {
-            if (sf_logfile) {
-                fprintf(sf_logfile, "[%d] file open request (flags = %0lx)\n",
-                    sf_world_rank, msg[0]);
-            }
-        }
-#endif
-        /* Send the open_op message to an IOC */
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], OPEN_OP,
+        /* Send the open_op message to the local IOC */
+        status = MPI_Ssend(msg, 3, MPI_INT64_T, sf_context->topology->world_rank, OPEN_OP,
             sf_context->sf_msg_comm);
 
         /* Check for errors */
         if (status == MPI_SUCCESS) {
             /* And post a receive for the open file ACK */
-            status = MPI_Irecv(&ioc_acks[i], 1, MPI_INT, io_concentrator[i],
-                COMPLETED, sf_context->sf_data_comm, &reqs[i]);
+            status = MPI_Irecv(&ioc_acks[0], 1, MPI_INT, sf_world_rank,
+                COMPLETED, sf_context->sf_data_comm, &reqs[0]);
+            if (status != MPI_SUCCESS) {
+                printf("[%d] MPI_Irecv (file_open ACK) failed\n", sf_world_rank);
+            }
+            else n_waiting++;
         }
+        while (n_waiting) {
+            int ready = 0;
+            status = MPI_Waitsome( 1, reqs, &ready, indices, MPI_STATUSES_IGNORE);
+            if (status != MPI_SUCCESS) {
+                int  len;
+                char estring[MPI_MAX_ERROR_STRING];
+                MPI_Error_string(status, estring, &len);
+                printf("[%d %s] MPI_ERROR! MPI_Waitsome returned an error(%s)\n",
+                       sf_world_rank, __func__, estring);
+                fflush(stdout);
+            }
 
-        if (status != MPI_SUCCESS) {
-            printf("[%d] MPI close_subfiles failure!", sf_world_rank);
-        } else
-            n_waiting++;
-    } /* END - for loop */
+            for (i = 0; i < ready; i++) {
+                n_waiting--;
+            }
+        } /* END - while */
+        if (ioc_acks[0] != 0)
+            open_failure = 1;
+    }
 
-    /* Wait for all (n_waiting) ACK messages to be received */
-    while (n_waiting) {
-        int ready = 0;
-        status = MPI_Waitsome(
-            n_io_concentrators, reqs, &ready, indices, MPI_STATUSES_IGNORE);
-        if (status != MPI_SUCCESS) {
-            int  len;
-            char estring[MPI_MAX_ERROR_STRING];
-            MPI_Error_string(status, estring, &len);
-            printf("[%d %s] MPI_ERROR! MPI_Waitsome returned an error(%s)\n",
-                sf_world_rank, __func__, estring);
-            fflush(stdout);
-        }
+    /* Gather status information from one or more IOCs on this node */
+    if (NODE_Allgather(&open_failure, 1, MPI_INT, node_local_status, 1,
+                       MPI_INT, sf_context->sf_node_local_comm) != 0) {
+        printf("[%d] MPI_Allgather (file_open ACK) failed\n", sf_world_rank);
+    }
+    /* If any process reports an error, we need to return an error.. */
+    for (i=0; i < sf_context->topology->local_peers; i++) {
+        if (node_local_status[i] != 0)
+            open_failure = 1;
+    }
 
-        for (i = 0; i < ready; i++) {
-            n_waiting--;
-        }
-    } /* END - while */
-
-    return 0;
+    return open_failure;
 }
 
 /*-------------------------------------------------------------------------
@@ -2037,10 +2191,11 @@ sf_open_subfiles(hid_t fid, char *filename, char *prefix, int flags)
     sf_context->sf_context_id = context_id;
     sf_context->h5_file_id = fid;
     sf_context->filename = strdup(filename);
+    sf_context->subfile_prefix = prefix;
     sf_shutdown_flag = 0;
 
     return open__subfiles(sf_context, sf_context->topology->n_io_concentrators,
-        fid, prefix, flags);
+        fid, flags);
 }
 
 /*-------------------------------------------------------------------------
@@ -2545,10 +2700,10 @@ queue_read_indep(
  * Function:    Public/IOC queue_file_open
  *
  * Purpose:     Implement the IOC file open function.  The
- *              function is invoked as a result of the IOC receiving the
- *              "header"/RPC.  What remains is open the subfile if it
- *              isn't already open.  This can happen if this function
- *              was invoked by another client process.
+ *              function is invoked as a result of the IOC receiving
+ *              the OPEN_OP RPC from a client.  We open the subfile if it
+ *              isn't already open.  This will happen when the function
+ *              is invoked by another client process.
  *
  * Return:      The integer status returned by the Internal read_independent
  *              function.  Successful operations will return 0.
@@ -2829,8 +2984,8 @@ increment_ioc_fini_counts(sf_work_request_t *msg, int subfile_rank,
  *-------------------------------------------------------------------------
  */
 int
-subfiling_open_file(
-    sf_work_request_t *msg, const char *prefix, int subfile_rank, int flags)
+subfiling_open_file( sf_work_request_t *msg, const char *prefix,
+                     int subfile_rank, int flags)
 {
     int errors = 0;
 
@@ -2854,15 +3009,18 @@ subfiling_open_file(
             int *io_concentrator = sf_context->topology->io_concentrator;
             const char *dotconfig = ".subfile_config";
             mode_t      mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+
+            /* 
+             * NOTE:  The config file should be colocated with the .h5 file.
+             * The actual subfiles will go where the prefix points us.
+             */
             if (prefix) {
                 mkdir(prefix, S_IRWXU);
                 sprintf(filepath, "%s/%ld_node_local_temp_%d_of_%d", prefix,
                     h5_file_id, subfile_rank, n_io_concentrators);
-                sprintf(config, "%s/%ld%s", prefix, h5_file_id, dotconfig);
             } else {
                 sprintf(filepath, "%ld_node_local_temp_%d_of_%d", h5_file_id,
                     subfile_rank, n_io_concentrators);
-                strcpy(config, dotconfig);
             }
 
             if ((subfile_fid = open(filepath, flags, mode)) < 0) {
@@ -2887,6 +3045,17 @@ subfiling_open_file(
                  * the user wants to truncate subfiles (if they exist),
                  * then we should also truncate an existing config file.
                  */
+                if (sf_context->filename) {
+                    char *slash = strchr(sf_context->filename, '/');
+                    if (slash) {
+                        sprintf(config, "%s/%ld%s", dirname(sf_context->filename),
+                               h5_file_id, dotconfig);
+                    }
+                    else {
+                        sprintf(config, "./%ld%s", h5_file_id, dotconfig);
+                    }
+                }
+
                 if (access(config, flags) == 0) {
                     truncate(config, 0);
                 }
@@ -2901,15 +3070,18 @@ subfiling_open_file(
                     fwrite(linebuf, strlen(linebuf), 1, f);
                     sprintf(linebuf,"hdf5_file=%s\n", context->filename);
                     fwrite(linebuf, strlen(linebuf), 1, f);
+                    if (prefix) {
+                        sprintf(linebuf,"directory=%s\n", prefix);
+                        fwrite(linebuf, strlen(linebuf), 1, f);
+                    }
+                    else {
+                        if (getcwd(linebuf, sizeof(linebuf)) != NULL)
+                            fwrite(linebuf, strlen(linebuf), 1, f);
+                    }
 
                     for (k = 0; k < n_io_concentrators; k++) {
-                        if (prefix)
-                            sprintf(linebuf, "%s/%ld_node_local_temp_%d_of_%d:%d", prefix,
-                            h5_file_id, subfile_rank, n_io_concentrators, io_concentrator[k]);
-                        else
-                            sprintf(linebuf, "%ld_node_local_temp_%d_of_%d:%d", h5_file_id,
-                            subfile_rank, n_io_concentrators, io_concentrator[k]);
-
+                        sprintf(linebuf, "%ld_node_local_temp_%d_of_%d:%d\n", h5_file_id,
+                                subfile_rank, n_io_concentrators, io_concentrator[k]);
                         fwrite(linebuf, strlen(linebuf), 1, f);
                     }
 
@@ -2973,8 +3145,8 @@ delete_subfiling_context(hid_t context_id)
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     if (sf_context) {
         if (sf_context->topology->n_io_concentrators > 1) {
-            if (sf_context->sf_group_comm != MPI_COMM_NULL) {
-                MPI_Comm_free(&sf_context->sf_group_comm);
+            if (sf_context->sf_ioc_group_comm != MPI_COMM_NULL) {
+                MPI_Comm_free(&sf_context->sf_ioc_group_comm);
             }
             if (sf_context->sf_intercomm != MPI_COMM_NULL) {
                 MPI_Comm_free(&sf_context->sf_intercomm);
@@ -3009,13 +3181,13 @@ sf_get_mpi_size(hid_t fid, int *size)
 }
 
 int
-sf_get_group_comm(hid_t fid, MPI_Comm *comm)
+sf_get_ioc_group_comm(hid_t fid, MPI_Comm *comm)
 {
     hid_t                context_id = fid_map_to_context(fid);
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context != NULL);
     assert(comm != NULL);
-    *comm = sf_context->sf_group_comm;
+    *comm = sf_context->sf_ioc_group_comm;
     return 0;
 }
 

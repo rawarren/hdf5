@@ -3,6 +3,7 @@
 /********************/
 
 #include <assert.h>
+#include <libgen.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -87,7 +88,8 @@ typedef struct {
     int64_t        sf_blocksize_per_stripe;
     MPI_Comm       sf_msg_comm;
     MPI_Comm       sf_data_comm;
-    MPI_Comm       sf_group_comm;
+    MPI_Comm       sf_ioc_group_comm;
+    MPI_Comm       sf_node_local_comm;
     MPI_Comm       sf_intercomm;
     int            sf_group_size;
     int            sf_group_rank;
@@ -229,7 +231,7 @@ H5_DLL hid_t   fid_map_to_context(hid_t sf_fid);
 H5_DLL void    set_verbose_flag(int subfile_rank, int new_value);
 H5_DLL int     sf_get_mpi_rank(hid_t fid, int *rank);
 H5_DLL int     sf_get_mpi_size(hid_t fid, int *size);
-H5_DLL int     sf_get_group_comm(hid_t fid, MPI_Comm *comm);
+H5_DLL int     sf_get_ioc_group_comm(hid_t fid, MPI_Comm *comm);
 H5_DLL int     sf_subfile_set_logging(hid_t sf_fid, int ioc_rank, int flag);
 
 /* clang-format on */

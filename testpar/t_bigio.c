@@ -530,7 +530,7 @@ dataset_big_write(void)
 
     block[0] = dims[0]/(hsize_t)mpi_size_g;
     block[1] = dims[1];
-	printf("[%d] block[0] = %lld block[1] = %lld\n", mpi_rank_g, block[0], block[1]);
+	printf("[%d]: block[0] %lld, block[1] %lld\n", mpi_rank_g, block[0], block[1]);
     stride[0] = block[0];
     stride[1] = block[1];
     count[0] = 1;
@@ -795,21 +795,21 @@ dataset_big_write(void)
 static void
 dataset_big_read(void)
 {
-    hid_t fid;                  /* HDF5 file ID */
-    hid_t acc_tpl;        /* File access templates */
-    hid_t xfer_plist;        /* Dataset transfer properties list */
-    hid_t file_dataspace;    /* File dataspace ID */
-    hid_t mem_dataspace;    /* memory dataspace ID */
+    hid_t fid;                          /* HDF5 file ID */
+    hid_t acc_tpl;                      /* File access templates */
+    hid_t xfer_plist;                   /* Dataset transfer properties list */
+    hid_t file_dataspace;               /* File dataspace ID */
+    hid_t mem_dataspace;                /* memory dataspace ID */
     hid_t dataset;
-    B_DATATYPE *rdata = NULL;    /* data buffer */
-    B_DATATYPE *wdata = NULL;     /* expected data buffer */
-    hsize_t dims[RANK];       /* dataset dim sizes */
-    hsize_t start[RANK];            /* for hyperslab setting */
-    hsize_t count[RANK], stride[RANK];        /* for hyperslab setting */
-    hsize_t block[RANK];            /* for hyperslab setting */
+    B_DATATYPE *rdata = NULL;           /* data buffer */
+    B_DATATYPE *wdata = NULL;           /* expected data buffer */
+    hsize_t dims[RANK];                 /* dataset dim sizes */
+    hsize_t start[RANK];                /* for hyperslab setting */
+    hsize_t count[RANK], stride[RANK];  /* for hyperslab setting */
+    hsize_t block[RANK];                /* for hyperslab setting */
     size_t num_points;
     hsize_t *coords = NULL;
-    herr_t ret;             /* Generic return value */
+    herr_t ret;                         /* Generic return value */
 
     /* allocate memory for data buffer */
     rdata = (B_DATATYPE *)HDmalloc(bigcount*sizeof(B_DATATYPE));
@@ -864,7 +864,7 @@ dataset_big_read(void)
     fill_datasets(start, block, wdata);
     MESG("data_array initialized");
     if(VERBOSE_MED){
-    MESG("data_array created");
+        MESG("data_array created");
     }
 
     /* set up the collective transfer properties list */
@@ -1940,7 +1940,7 @@ int main(int argc, char **argv)
     if (newsize != oldsize) {
        bigcount = newsize * 2;
     }
-    if ( (MPI_Init_thread(&argc, &argv, require, &mpi_provides)) != MPI_SUCCESS) {
+    if ((MPI_Init_thread(&argc, &argv, require, &mpi_provides)) != MPI_SUCCESS) {
        HDfprintf(stderr, "FATAL: Unable to initialize MPI\n");
        HDexit(EXIT_FAILURE);
 	}

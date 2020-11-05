@@ -17,6 +17,7 @@ main(int argc, char **argv)
 	int loop_count = 20;
 	int mpi_provides, require = MPI_THREAD_MULTIPLE;
 	hid_t subfile_id = 1;
+	double t_start, t_end, t_open, t_close;
 	const char *h5_filename = "unused.h5";
 	FILE *h5file;
 
@@ -35,12 +36,18 @@ main(int argc, char **argv)
 	
 	h5file = fopen(h5_filename, "w+");
 	for(i=0; i < loop_count; i++) {
+		t_start = MPI_Wtime();
+		sf_open_subfiles(subfile_id, h5_filename, NULL, O_CREAT|O_TRUNC|O_RDWR);
+		t_end = MPI_Wtime();
+		t_open = t_end - t_start;
+		t_start = t_end;
+		sf_close_subfiles(subfile_id);
+		t_end = MPI_Wtime();
+		t_close = t_end - t_start;
 		if (mpi_rank == 0) {
-			printf("loop_count(%d)\n", i);
+			printf("loop_count(%d) ... time = %lf = %lf + %lf seconds\n", i, t_open + t_close, t_open, t_close);
 			fflush(stdout);
 		}
-		sf_open_subfiles(subfile_id, h5_filename, NULL, O_CREAT|O_TRUNC|O_RDWR);
-		sf_close_subfiles(subfile_id);
 	}
 
 	if (h5file) {
