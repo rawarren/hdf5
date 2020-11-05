@@ -75,7 +75,17 @@ MODULE LOADS::
 rawarren@cori06:~> module load gcc/9.3.0
 rawarren@cori06:~> module load openmpi/4.0.2
 
+on SUMMIT,
+MODULE UNLOADS::
+[rawarren@login5.summit hdf5]$ module unload xl/16.1.1-5
 
+Inactive Modules:
+  1) spectrum-mpi
 
+MODULE LOADS::
+[rawarren@login5.summit hdf5]$ module load llvm
+
+Activating Modules:
+  1) spectrum-mpi/10.3.1.2-20200121
 
 
