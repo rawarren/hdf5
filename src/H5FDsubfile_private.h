@@ -50,6 +50,7 @@ typedef enum {
     SELECT_IOC_ONE_PER_NODE = 0, /* Default */
     SELECT_IOC_EVERY_NTH_RANK,
     SELECT_IOC_WITH_CONFIG,
+	SELECT_IOC_TOTAL,
     ioc_selection_options
 } sf_ioc_selection_t;
 
@@ -112,7 +113,8 @@ typedef struct {
 } file_map_to_context_t;
 
 #    define K(n) ((n) *1024)
-#    define DEFAULT_STRIPE_SIZE K(256) /* (1024*1024) */
+#    define M(n) ((n) * (1024 * 1024))
+#    define DEFAULT_STRIPE_SIZE M(32)
 #    define MAX_DEPTH 1024
 
 /* MPI Tags are 32 bits, we treat them as unsigned
@@ -194,13 +196,13 @@ H5_DLL int     queue_write_indep( sf_work_request_t *msg, int subfile_rank, int 
 H5_DLL int     queue_read_indep( sf_work_request_t *msg, int subfile_rank, int source, MPI_Comm comm);
 H5_DLL int     subfiling_close_file(int subfile_rank, int *subfile_fid, MPI_Comm comm);
 H5_DLL int     subfiling_shutdown(int subfile_rank, int *subfile_fid, MPI_Comm comm);
-H5_DLL int     subfiling_open_file( sf_work_request_t *msg, const char *prefix, int subfile_rank, int flags);
+H5_DLL int     subfiling_open_file( sf_work_request_t *msg, int subfile_rank, int flags);
 H5_DLL int     queue_file_open( sf_work_request_t *msg, int subfile_rank, int source, MPI_Comm comm);
 H5_DLL int     decrement_file_ref_counts(sf_work_request_t *msg, int subfile_rank, int source,
                    MPI_Comm comm, file_close_cb callback_ftn);
 H5_DLL int     increment_ioc_fini_counts(sf_work_request_t *msg, int subfile_rank, int source,
                    MPI_Comm comm, file_close_cb callback_ftn);
-H5_DLL int     sf_open_subfiles(hid_t context_id, char *filename, char *prefix, int flags);
+H5_DLL int     sf_open_subfiles(hid_t context_id, char *filename, char *h5dir, int flags);
 H5_DLL int     sf_close_subfiles(hid_t context_id);
 H5_DLL int     sf_notify_shutdown(hid_t context_id);
 H5_DLL int     sf_write_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,

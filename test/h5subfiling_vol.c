@@ -1880,6 +1880,7 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     H5VL_subfiling_info_t *info;
     H5VL_subfiling_t *file;
 	H5VL_subfiling_file_t *subfiling_file;
+	int errors = 0;
     hid_t under_fapl_id = -1;
 	void *ret_value = NULL;
     void *under = NULL;
@@ -1906,8 +1907,6 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     if(under) {
 		int mpi_enabled = 0;
 		int open_flags = O_RDWR;
-		char *dir_path = NULL;
-		char  file_prefix[PATH_MAX];
 		uint64_t h5_file_id = (uint64_t)0;
 
 		/* We can't use the HDF5 file flags directly, these
@@ -1922,6 +1921,7 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 			perror("malloc");
 			fprintf(stderr, "can't allocate Subfiling file struct");
 			ret_value = file;
+			errors++;
 			goto done;
 		}
 		memset(subfiling_file, 0, sizeof(H5VL_subfiling_file_t));
@@ -1934,30 +1934,32 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
             *req = H5VL_subfiling_new_obj(*req, info->under_vol_id);
 
 		if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-			MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
-			MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
-			if (subfiling_file->my_rank == 0) {
-				if (H5FD__get_file_ino(name, &h5_file_id) < 0)
-					file = NULL;
+            if (mpi_enabled) {
+				MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
+				MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
+				if (subfiling_file->my_rank == 0) {
+					if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
+						errors++;
+						goto done;
+					}
+				}
+				
+				if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS) {
+					errors++;
+					goto done;
+				}
 			}
-			if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS)
-                file = NULL;
+			else {
+				puts("MPI not initialized!");
+				errors++;
+				goto done;
+			}
 		}
 
 		if (file != NULL) {
-			dir_path = strrchr(name,'/');
-			if (dir_path) {
-				*dir_path = '\0';
-				strcpy(file_prefix, name);
-				*dir_path = '/';
-				dir_path = file_prefix;
-			}
-			else {
-				dir_path = getcwd(file_prefix, PATH_MAX);
-			}
-			/* Only open subfiling if we've enabled MPI */
-			if (mpi_enabled && (sf_open_subfiles(h5_file_id, name, dir_path, open_flags) < 0)) {
-				file = NULL;
+			char *file_dir = H5F_get_extpath(under);
+			if (sf_open_subfiles(h5_file_id, name, file_dir , open_flags) < 0) {
+				errors++;
             }
 			else {
 				subfiling_file->h5_file_id = h5_file_id;
@@ -1968,9 +1970,16 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     else
         file = NULL;
 
+
 done:
+	if (errors) {
+		if (file) free(file);
+		file = NULL;
+		if (subfiling_file) free(subfiling_file);
+	}
 
 	ret_value = (void *)file;
+	if (file == NULL) 
 
     /* Close underlying FAPL */
     H5Pclose(under_fapl_id);
@@ -2000,6 +2009,7 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     H5VL_subfiling_info_t *info;
     H5VL_subfiling_file_t *subfiling_file;
 	H5VL_subfiling_t *file;
+	int errors = 0;
     hid_t under_fapl_id = -1;
 	void *ret_value = NULL;
     void *under = NULL;
@@ -2026,8 +2036,6 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     if(under) {
 		int mpi_enabled = 0;
 		int open_flags = O_RDWR;
-		char *dir_path = NULL;
-		char  file_prefix[PATH_MAX];
 		uint64_t h5_file_id = (uint64_t)-1;
 
 		/* We can't use the HDF5 file flags directly, these
@@ -2042,6 +2050,7 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
 			perror("malloc");
 			fprintf(stderr, "can't allocate Subfiling file struct");
 			ret_value = file;
+			errors++;
 			goto done;
 		}
 		memset(subfiling_file, 0, sizeof(H5VL_subfiling_file_t));
@@ -2052,31 +2061,32 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
             *req = H5VL_subfiling_new_obj(*req, info->under_vol_id);
         
 		if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-			MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
-			MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
-			if (subfiling_file->my_rank == 0) {
-				if (H5FD__get_file_ino(name, &h5_file_id) < 0)
-					file = NULL;
-			}
-			if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS)
-                file = NULL;
-		}
-
-		if (file != NULL) {
-			dir_path = strrchr(name,'/');
-			if (dir_path) {
-				*dir_path = '\0';
-				strcpy(file_prefix, name);
-				*dir_path = '/';
-				dir_path = file_prefix;
+			if (mpi_enabled) {
+				MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
+				MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
+				if (subfiling_file->my_rank == 0) {
+					if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
+						errors++;
+						goto done;
+					}
+				}
+				if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS) {
+                    errors++;
+					goto done;
+				}
 			}
 			else {
-				dir_path = getcwd(file_prefix, PATH_MAX);
+				puts("MPI not initialized!");
+				errors++;
+				goto done;
 			}
+		}
 
+		if (file != NULL) {	
+			char *file_dir = H5F_get_extpath(under);
 			/* Only open subfiling if we've enabled MPI */
-			if (mpi_enabled && (sf_open_subfiles(h5_file_id, name, dir_path, open_flags) < 0)) {
-				file = NULL;
+			if (sf_open_subfiles(h5_file_id, name, file_dir, open_flags) < 0) {
+				errors++;
             }
 			else {
 				subfiling_file->h5_file_id = h5_file_id;
@@ -2089,6 +2099,11 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
         file = NULL;
 
 done:
+	if (errors) {
+		if (file) free(file);
+		file = NULL;
+		if (subfiling_file) free(subfiling_file);
+	}
 
 	ret_value = (void *)file;
 
@@ -2340,17 +2355,19 @@ H5VL_subfiling_file_close(void *_file, hid_t dxpl_id, void **req)
     ret_value = H5VLfile_close(o->under_object, o->under_vol_id, dxpl_id, req);
 
     if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-		uint64_t h5_file_id = (uint64_t)subfiling_file->h5_file_id;
-        if (mpi_enabled && (sf_close_subfiles(h5_file_id) < 0)) {
-			printf("Unable to close subfiles\n");
-			ret_value = -1;
+		if (mpi_enabled) {
+			uint64_t h5_file_id = (uint64_t)subfiling_file->h5_file_id;
+			if ((sf_close_subfiles(h5_file_id) < 0)) {
+				printf("Unable to close subfiles\n");
+				ret_value = -1;
+			}
 		}
 		else {
 			if (subfiling_file->file_name)
 				free(subfiling_file->file_name);
 			free(subfiling_file);
 		}
-	}	
+	}
 	
     /* Check for async request */
     if(req && *req)

@@ -1489,6 +1489,7 @@ done:
     FUNC_LEAVE_NOAPI(ret_value)
 }
 
+
 static
 herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, hssize_t elements, size_t type_extent, hssize_t *vlen, hsize_t **_offsets, hsize_t **_blocklens, void ***_bufs )
 {
