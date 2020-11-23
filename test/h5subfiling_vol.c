@@ -367,6 +367,8 @@ static hid_t H5VL_SUBFILING_g = H5I_INVALID_HID;
 H5PL_type_t H5PLget_plugin_type(void) {return H5PL_TYPE_VOL;}
 const void *H5PLget_plugin_info(void) {return &H5VL_subfiling_g;}
 
+extern char *H5F_get_extpath(void *f);
+
 static int file_create_count = 0;
 static int file_open_count = 0;
 static int file_close_count = 0;

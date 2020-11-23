@@ -19,6 +19,10 @@ static int sf_open_file_count = 0;
 static int sf_close_file_count = 0;
 static int sf_ops_after_first_close = 0;
 
+static int sf_write_ops = 0;
+static double sf_pwrite_time = 0.0;
+static double sf_write_wait_time = 0.0;
+
 static int *request_count_per_rank = NULL;
 
 atomic_int sf_workinprogress = 0;
@@ -245,7 +249,7 @@ H5FD__determine_ioc_count(int world_size, int world_rank,
 
     if (!ioc_count || (ioc_selection != ioc_select_method)) {
         int     k, node;
-		int     rank_multiple = 0;
+	int     rank_multiple = 0;
         int     node_index;
         int     iocs_per_node = 1;
         char *  envValue = NULL;
@@ -265,90 +269,89 @@ H5FD__determine_ioc_count(int world_size, int world_rank,
         assert(io_concentrator != NULL);
         app_topology->selection_type = ioc_selection = ioc_select_method;
 
-		if (ioc_select_method == SELECT_IOC_WITH_CONFIG) {
-			puts("SELECT_IOC_WITH_CONFIG: not supported yet...");
-			ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-			goto next;
-		}
-		if (ioc_select_method == SELECT_IOC_TOTAL) {
-			if (ioc_select_option) {
-				int checkValue = atoi(ioc_select_option);
-				if (checkValue == 0) {
-					ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-					goto next;
-				}
-			    if (checkValue > world_size)
-					checkValue = world_size;
-
-				if (checkValue) {
-					ioc_count = checkValue;
-					rank_multiple = (world_size/checkValue);
-					/* Starts with a non-zero rank */
-					if (world_rank && ((world_rank % rank_multiple) == 0))
-						app_topology->rank_is_ioc = true;
-				} 
-				if (io_concentrator) {
-					int ioc_next;
-					int ioc_index;
-					for ( k=1, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
-						ioc_index = k * rank_multiple;
-						io_concentrator[ioc_next] = ioc_index;
-					}
-
-					assert(ioc_count == ioc_next);
-					app_topology->n_io_concentrators = ioc_count;
-				}
-				*thisapp = app_topology;
-			}
-			else {
-				puts("Missing option argument!");
+	if (ioc_select_method == SELECT_IOC_WITH_CONFIG) {
+		puts("SELECT_IOC_WITH_CONFIG: not supported yet...");
+		ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+		goto next;
+	}
+	if (ioc_select_method == SELECT_IOC_TOTAL) {
+		if (ioc_select_option) {
+			int checkValue = atoi(ioc_select_option);
+			if (checkValue == 0) {
 				ioc_select_method = SELECT_IOC_ONE_PER_NODE;
 				goto next;
 			}
-		}
-		if (ioc_select_method == SELECT_IOC_EVERY_NTH_RANK) {
-			/* This is similar to the previous method (SELECT_IOC_TOTAL)
-			 * in that the user chooses a rank multiple rather than an
-			 * absolute number of IO Concentrators.  Unlike the former,
-			 * we always start our selection with rank zero (0) and
-			 * the apply the stride to identify other IOCs.
-			 */
-			if (ioc_select_option) {
-				int checkValue = atoi(ioc_select_option);
-				if (checkValue == 0) { /* Error */
-					ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-					goto next;
-				}
-				rank_multiple = checkValue;
-				ioc_count = (world_size / rank_multiple);
-					
-				if ((world_rank % rank_multiple) == 0) {
+		    if (checkValue > world_size)
+				checkValue = world_size;
+
+			if (checkValue) {
+				ioc_count = checkValue;
+				rank_multiple = (world_size/checkValue);
+				/* Starts with a non-zero rank */
+				if (world_rank && ((world_rank % rank_multiple) == 0))
 					app_topology->rank_is_ioc = true;
+			} 
+			if (io_concentrator) {
+				int ioc_next;
+				int ioc_index;
+				for ( k=1, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
+					ioc_index = k * rank_multiple;
+					io_concentrator[ioc_next] = ioc_index;
 				}
-				else ioc_count++;
 
-				if (io_concentrator) {
-					int ioc_next;
-					int ioc_index;
-					for ( k=0, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
-						ioc_index = k * rank_multiple;
-						io_concentrator[ioc_next] = ioc_index;
-					}
-					assert(ioc_count == ioc_next);
-					app_topology->n_io_concentrators = ioc_count;
-				}
-				*thisapp = app_topology;
+				assert(ioc_count == ioc_next);
+				app_topology->n_io_concentrators = ioc_count;
 			}
-			else {
-				puts("Missing option argument!");
-				ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-			}
+			*thisapp = app_topology;
 		}
+		else {
+			puts("Missing option argument!");
+			ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+			goto next;
+		}
+	}
+	if (ioc_select_method == SELECT_IOC_EVERY_NTH_RANK) {
+		/* This is similar to the previous method (SELECT_IOC_TOTAL)
+		 * in that the user chooses a rank multiple rather than an
+		 * absolute number of IO Concentrators.  Unlike the former,
+		 * we always start our selection with rank zero (0) and
+		 * the apply the stride to identify other IOCs.
+		 */
+		if (ioc_select_option) {
+			int checkValue = atoi(ioc_select_option);
+			if (checkValue == 0) { /* Error */
+				ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+				goto next;
+			}
+			rank_multiple = checkValue;
+			ioc_count = (world_size / rank_multiple);
 
-	next:
+			if ((world_rank % rank_multiple) == 0) {
+				app_topology->rank_is_ioc = true;
+			}
+			else ioc_count++;
+			if (io_concentrator) {
+				int ioc_next;
+				int ioc_index;
+				for ( k=0, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
+					ioc_index = k * rank_multiple;
+					io_concentrator[ioc_next] = ioc_index;
+				}
+				assert(ioc_count == ioc_next);
+				app_topology->n_io_concentrators = ioc_count;
+			}
+			*thisapp = app_topology;
+		}
+		else {
+			puts("Missing option argument!");
+			ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+		}
+	}
+
+next:
 
         if (ioc_select_method == SELECT_IOC_ONE_PER_NODE) {
-			app_topology->selection_type = ioc_select_method;
+            app_topology->selection_type = ioc_select_method;
             ioc_count = count_nodes(app_topology);
             /* FIXME: This should ONLY be used for testing!
              * For production, we should probably limit the
@@ -417,7 +420,7 @@ H5FD__determine_ioc_count(int world_size, int world_rank,
             }
         }
     } else {
-		/* Cached? */
+	/* Cached? */
         app_topology = (sf_topology_t *) get_subfiling_object(topology_id);
         *thisapp = app_topology;
     }
@@ -2032,14 +2035,17 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
 #endif
 
     if (sf_context->topology->rank_is_ioc) {
-		if ((subfile_fid = sf_context->sf_fid) > 0) {
-			if (fdatasync(subfile_fid) < 0)
-				errors++;
-			if (close(subfile_fid) < 0)
-				errors++;
-		}
+	if ((subfile_fid = sf_context->sf_fid) > 0) {
+		if (fdatasync(subfile_fid) < 0)
+			errors++;
+		if (close(subfile_fid) < 0)
+			errors++;
+	}
         wait_for_thread_main();
         finalize_ioc_threads();
+        printf("[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf\n", 
+	       sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time );
+	fflush(stdout);
     }
 
     status = MPI_Allreduce(
@@ -2580,11 +2586,15 @@ queue_write_indep(
     int64_t              data_size = msg->header[0];
     int64_t              file_offset = msg->header[1];
     int64_t              file_context_id = msg->header[2];
+    double               t_start, t_end;
+    double               t_wait, t_write;
     subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
     /* flag that we've attempted to write data to the file */
     sf_context->sf_write_count++;
+    /* For debugging performance */
+    sf_write_ops++;
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
@@ -2595,6 +2605,7 @@ queue_write_indep(
         }
     }
 #endif
+    t_start = MPI_Wtime();
     if (recv_buffer == NULL) {
         if ((recv_buffer = (char *) malloc((size_t) data_size)) == NULL) {
             perror("malloc");
@@ -2608,6 +2619,10 @@ queue_write_indep(
     ret = MPI_Recv(recv_buffer, (int) data_size, MPI_BYTE, source,
         WRITE_INDEP_DATA, comm, &msg_status);
 
+    t_end = MPI_Wtime();
+    t_wait = t_end - t_start;
+    sf_write_wait_time += t_wait;
+    t_start = t_end;
 #ifndef NDEBUG
     if (sf_verbose_flag) {
         if (sf_logfile) {
@@ -2636,14 +2651,18 @@ queue_write_indep(
         printf("[ioc(%d)] WARNING: %s called while subfile_fid = %d (closed)\n",
             subfile_rank, __func__, fd);
         fflush(stdout);
-    } else if (sf_write_data(
-                   fd, file_offset, recv_buffer, data_size, subfile_rank) < 0) {
-        free(recv_buffer);
-        recv_buffer = NULL;
-        printf("[ioc(%d) %s] sf_write_data returned an error!\n", subfile_rank,
-            __func__);
-        fflush(stdout);
-        return -1;
+    } else {
+        if (sf_write_data(fd, file_offset, recv_buffer, data_size, subfile_rank) < 0) {
+            free(recv_buffer);
+            recv_buffer = NULL;
+            printf("[ioc(%d) %s] sf_write_data returned an error!\n", subfile_rank,
+                   __func__);
+           fflush(stdout);
+           return -1;
+        }
+	t_end = MPI_Wtime();
+        t_write = t_end - t_start;
+	sf_pwrite_time += t_write;
     }
     /* Done... */
     if (recv_buffer) {
@@ -3065,8 +3084,8 @@ subfiling_open_file(
         if (sf_context->sf_fid < 0) {
             int  n_io_concentrators = sf_context->topology->n_io_concentrators;
             int *io_concentrator = sf_context->topology->io_concentrator;
-			char *prefix = NULL;
-			char *subfile_dir = NULL;
+                        char *prefix = NULL;
+                        char *subfile_dir = NULL;
             const char *dotconfig = ".subfile_config";
             mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
@@ -3075,28 +3094,33 @@ subfiling_open_file(
                 sprintf(filepath, "%s/%ld_node_local_temp_%d_of_%d", prefix,
                     h5_file_id, subfile_rank, n_io_concentrators);
             } else {
-                sprintf(filepath, "./%ld_node_local_temp_%d_of_%d", h5_file_id,
-                    subfile_rank, n_io_concentrators);
+              strcpy(filepath,sf_context->filename);
+              subfile_dir = strrchr(filepath, '/');
+              assert(subfile_dir);
+              sprintf(subfile_dir, "/%ld_node_local_temp_%d_of_%d", h5_file_id,
+                      subfile_rank, n_io_concentrators);
             }
 
             if ((subfile_fid = open(filepath, flags, mode)) < 0) {
                 end_thread_exclusive();
+                printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
+                fflush(stdout);
                 errors++;
                 goto done;
             } else {
                 sf_context->sf_fid = subfile_fid;
             }
 
-			strcpy(filepath,sf_context->filename);
-			subfile_dir = strrchr(filepath, '/');
-			if (subfile_dir) {
-				sprintf(subfile_dir,"/%ld%s", h5_file_id, dotconfig);
-				strcpy(config, filepath);
-			}
+            strcpy(filepath,sf_context->filename);
+            subfile_dir = strrchr(filepath, '/');
+            if (subfile_dir) {
+                sprintf(subfile_dir,"/%ld%s", h5_file_id, dotconfig);
+                        strcpy(config, filepath);
+            }
 
             if (flags & O_CREAT) {
                 FILE *f = NULL;
-				
+                                
                 /* If a config file already exists, AND
                  * the user wants to truncate subfiles (if they exist),
                  * then we should also truncate an existing config file.
@@ -3107,7 +3131,7 @@ subfiling_open_file(
                 f = fopen(config, "w+");
                 if (f != NULL) {
                     int k;
-					char linebuf[PATH_MAX];
+                    char linebuf[PATH_MAX];
                     sprintf(
                         linebuf, "stripe_size=%ld\n", sf_context->sf_stripe_size);
                     fwrite(linebuf, strlen(linebuf), 1, f);
