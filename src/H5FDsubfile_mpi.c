@@ -1988,7 +1988,7 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
     int         ioc_acks[n_io_concentrators];
     MPI_Request reqs[n_io_concentrators];
     int *       io_concentrator = sf_context->topology->io_concentrator;
-
+	double      t0, t1;
     /* The map from fid to context can now be cleared */
     clear_fid_map_entry(fid);
 #if 0
@@ -2027,6 +2027,7 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
     }
 
 #else
+	t0 = MPI_Wtime();
     /* Shutdown the main IOC thread */
     sf_shutdown_flag = 1;
     /* Allow ioc_main to exit.*/
@@ -2035,17 +2036,18 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
 #endif
 
     if (sf_context->topology->rank_is_ioc) {
-	if ((subfile_fid = sf_context->sf_fid) > 0) {
-		if (fdatasync(subfile_fid) < 0)
-			errors++;
-		if (close(subfile_fid) < 0)
-			errors++;
-	}
+        if ((subfile_fid = sf_context->sf_fid) > 0) {
+		    if (fdatasync(subfile_fid) < 0)
+			    errors++;
+            if (close(subfile_fid) < 0)
+			    errors++;
+        }
         wait_for_thread_main();
         finalize_ioc_threads();
-        printf("[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf\n", 
-	       sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time );
-	fflush(stdout);
+		t1 = MPI_Wtime();
+        printf("[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf IOC_shutdown = %lf seconds\n",
+			   sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time, (t1 - t0));
+        fflush(stdout);
     }
 
     status = MPI_Allreduce(
@@ -2117,6 +2119,57 @@ sf_close_subfiles(hid_t fid)
  *-------------------------------------------------------------------------
  */
 
+#if 1
+static int
+open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
+    hid_t fid, int flags)
+{
+	int ret;
+	int g_errors = 0;
+	int l_errors = 0;
+
+    assert(sf_context != NULL);
+
+    /*
+     * Save the HDF5 file id (fid) to subfile context mapping.
+     * There shouldn't be any issue, but check the status and
+     * return if there was a problem.
+     */
+
+    ret = record_fid_to_subfile(fid, sf_context->sf_context_id, NULL);
+    if (ret != SUCCEED) {
+        printf("[%d - %s] Error mapping hdf5 file to a subfiling context\n",
+            sf_context->topology->world_rank, __func__);
+        return -1;
+    }
+
+	if (sf_context->topology->rank_is_ioc) {
+		sf_work_request_t msg = {{flags,fid, sf_context->sf_context_id},
+								 OPEN_OP, sf_context->topology->world_rank,
+								 sf_context->topology->subfile_rank,
+								 sf_context->sf_context_id
+		};
+
+		if (flags & O_CREAT)
+			sf_context->sf_fid = -1;
+
+		l_errors = subfiling_open_file(&msg, sf_context->topology->subfile_rank, flags);
+	}
+
+	g_errors = l_errors;
+
+	MPI_Allreduce(&l_errors, &g_errors, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+	if (g_errors) {
+		if (sf_context->topology->world_rank == 0) {
+			printf("%s: error count = %d\n", __func__, g_errors);
+			fflush(stdout);
+		}
+	}
+
+	return g_errors;
+}
+
+#else
 static int
 open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
     hid_t fid, int flags)
@@ -2196,6 +2249,7 @@ open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
 
     return 0;
 }
+#endif
 
 /*-------------------------------------------------------------------------
  * Function:    Public/Client open_subfiles
@@ -3065,11 +3119,12 @@ subfiling_open_file(
     sf_work_request_t *msg, int subfile_rank, int flags)
 {
     int errors = 0;
-
+	double t_start=0.0, t_end=0.0;
     /* Only the real IOCs open the subfiles
      * Once a file is opened, all additional file open requests
      * can return immediately.
      */
+	t_start = MPI_Wtime();
     if (subfile_rank >= 0) {
         char                 filepath[PATH_MAX];
         char                 config[PATH_MAX];
@@ -3107,9 +3162,9 @@ subfiling_open_file(
                 fflush(stdout);
                 errors++;
                 goto done;
-            } else {
-                sf_context->sf_fid = subfile_fid;
             }
+
+			sf_context->sf_fid = subfile_fid;
 
             strcpy(filepath,sf_context->filename);
             subfile_dir = strrchr(filepath, '/');
@@ -3171,6 +3226,10 @@ subfiling_open_file(
         end_thread_exclusive();
     }
 done:
+	t_end = MPI_Wtime();
+    printf("subfiling_open_file completed in %lf seconds with %d errors\n",
+		   (t_end - t_start), errors);
+    fflush(stdout);
     return errors;
 }
 

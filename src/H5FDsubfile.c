@@ -315,7 +315,7 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     }
 
     if (newContext->topology->rank_is_ioc) {
-        int status = initialize_ioc_threads(newContext);
+		int status = initialize_ioc_threads(newContext);
         if (status)
             goto done;
     }
@@ -328,6 +328,9 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     *sf_context = context_id;
 
 done:
+	/* Wait for helper threads / IO Concentrators to be initialized */
+	MPI_Barrier(MPI_COMM_WORLD);
+
     FUNC_LEAVE_API(ret_value)
 
     return ret_value;

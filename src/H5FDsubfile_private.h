@@ -76,26 +76,26 @@ typedef struct topology {
 } sf_topology_t;
 
 typedef struct {
-    hid_t  sf_context_id;
-    hid_t  h5_file_id;
-    int    sf_fid;
-    size_t sf_write_count;
-    size_t sf_read_count;
-    size_t sf_eof;
+    hid_t            sf_context_id;
+    hid_t            h5_file_id;
+    int              sf_fid;
+    size_t           sf_write_count;
+    size_t           sf_read_count;
+    size_t           sf_eof;
     /* Copy of the HDF5 File 'serial' number */
-    unsigned long  fileno;
-    int64_t        sf_stripe_size;
-    int64_t        sf_blocksize_per_stripe;
-    MPI_Comm       sf_msg_comm;
-    MPI_Comm       sf_data_comm;
-    MPI_Comm       sf_group_comm;
-    MPI_Comm       sf_intercomm;
-    int            sf_group_size;
-    int            sf_group_rank;
-    int            sf_intercomm_root;
-    char *         subfile_prefix;
-	char *         filename;
-    sf_topology_t *topology;
+    unsigned long    fileno;
+    int64_t          sf_stripe_size;
+    int64_t          sf_blocksize_per_stripe;
+    MPI_Comm         sf_msg_comm;
+    MPI_Comm         sf_data_comm;
+    MPI_Comm         sf_group_comm;
+    MPI_Comm         sf_intercomm;
+    int              sf_group_size;
+    int              sf_group_rank;
+    int              sf_intercomm_root;
+    char *           subfile_prefix;
+	char *           filename;
+    sf_topology_t   *topology;
 } subfiling_context_t;
 
 typedef struct {

@@ -110,6 +110,9 @@ initialize_ioc_threads(subfiling_context_t *sf_context)
     int      world_size = sf_context->topology->world_size;
     size_t   alloc_size = ((size_t)world_size * sizeof(struct hg_thread_work));
     char    *envValue;
+    double   t_start = 0.0, t_end = 0.0;
+
+	t_start = MPI_Wtime();
     assert(context_id != NULL);
     /* Initialize the main IOC thread input argument.
      * Each IOC request will utilize this context_id which is
@@ -170,6 +173,12 @@ initialize_ioc_threads(subfiling_context_t *sf_context)
         puts("hg_thread_create failed");
         goto err_exit;
     }
+
+	t_end = MPI_Wtime();
+	if (sf_context->topology->subfile_rank == 0) {
+		printf("%s: time = %lf seconds\n", __func__, (t_end - t_start));
+		fflush(stdout);
+	}
     return 0;
 
 err_exit:

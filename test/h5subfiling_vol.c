@@ -1890,7 +1890,9 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
     printf("------- SUBFILING VOL FILE Create\n");
 #endif
+	double t_start = 0.0, t_end = 0.0;
 
+	t_start = MPI_Wtime();
     /* Get copy of our VOL info from FAPL */
     H5Pget_vol_info(fapl_id, (void **)&info);
 
@@ -1974,6 +1976,11 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
 
 
 done:
+	t_end = MPI_Wtime();
+	if (subfiling_file->my_rank == 0) {
+		printf("%s: HDF5 File_open + Subfiling_open completed in %lf seconds\n", __func__, (t_end - t_start));
+		fflush(stdout);
+	}
 	if (errors) {
 		if (file) free(file);
 		file = NULL;
@@ -2336,7 +2343,9 @@ H5VL_subfiling_file_close(void *_file, hid_t dxpl_id, void **req)
     H5VL_subfiling_file_t *subfiling_file = (H5VL_subfiling_file_t *)o->obj.item.file;
     int mpi_enabled = 0;
     herr_t ret_value;
-
+	double t_start = 0.0, t_end = 0.0;
+	double t_substart = 0.0, t_subend = 0.0;
+	t_start = MPI_Wtime();
 	if (file_create_count > 0) {
 		if (file_create_count != file_close_count)
 			puts("mismatched file_create_count and file_close_count");
@@ -2359,9 +2368,17 @@ H5VL_subfiling_file_close(void *_file, hid_t dxpl_id, void **req)
     if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
 		if (mpi_enabled) {
 			uint64_t h5_file_id = (uint64_t)subfiling_file->h5_file_id;
+			t_substart = MPI_Wtime();
 			if ((sf_close_subfiles(h5_file_id) < 0)) {
 				printf("Unable to close subfiles\n");
 				ret_value = -1;
+			}
+			t_subend = MPI_Wtime();
+			t_end = t_subend;
+			if (subfiling_file->my_rank == 0) {
+				printf("%s: subfile_close completed in %lf and HDF5 file close in %lf seconds\n",
+					   __func__, (t_subend - t_substart),(t_end - t_start));
+				fflush(stdout);
 			}
 		}
 		else {
@@ -2378,6 +2395,8 @@ H5VL_subfiling_file_close(void *_file, hid_t dxpl_id, void **req)
     /* Release our wrapper, if underlying file was closed */
     if(ret_value >= 0)
         H5VL_subfiling_free_obj(o);
+
+
 
     return ret_value;
 } /* end H5VL_subfiling_file_close() */
