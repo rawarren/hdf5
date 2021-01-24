@@ -185,6 +185,8 @@ H5_init_library(void)
      */
     if (!H5_dont_atexit_g) {
 
+		(void)HDatexit(H5_term_subfiling);
+
 #if defined(H5_HAVE_THREADSAFE) && defined(H5_HAVE_WIN_THREADS)
         /* Clean up Win32 thread resources. Pthreads automatically cleans up.
          * This must be entered before the library cleanup code so it's
@@ -470,6 +472,46 @@ H5dont_atexit(void)
 
     FUNC_LEAVE_API_NOFS(ret_value)
 } /* end H5dont_atexit() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:	H5_term_subfiling
+ *
+ * Purpose:	Terminate interfaces in a well-defined order due to
+ *		dependencies among the interfaces, then terminate
+ *		library-specific data.
+ *
+ * Return:	void
+ *
+ *-------------------------------------------------------------------------
+ */
+void
+H5_term_subfiling(void)
+{
+    int	pending, ntries = 0, n;
+    size_t	at = 0;
+
+#ifdef H5_HAVE_THREADSAFE
+    /* explicit locking of the API */
+    H5_FIRST_THREAD_INIT
+    H5_API_LOCK
+#endif
+
+    /* Reset flag indicating that the library is being shut down */
+    H5_TERM_GLOBAL = FALSE;
+
+    /* Mark library as closed */
+    H5_INIT_GLOBAL = FALSE;
+
+    /* Don't pop the API context (i.e. H5CX_pop), since it's been shut down already */
+
+done:
+#ifdef H5_HAVE_THREADSAFE
+    H5_API_UNLOCK
+#endif /* H5_HAVE_THREADSAFE */
+
+    return;
+} /* end H5_term_library() */
 
 
 /*-------------------------------------------------------------------------

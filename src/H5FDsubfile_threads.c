@@ -174,11 +174,15 @@ initialize_ioc_threads(subfiling_context_t *sf_context)
         goto err_exit;
     }
 
+#ifndef NDEBUG
 	t_end = MPI_Wtime();
-	if (sf_context->topology->subfile_rank == 0) {
-		printf("%s: time = %lf seconds\n", __func__, (t_end - t_start));
-		fflush(stdout);
-	}
+    if (sf_verbose_flag) {
+	    if (sf_context->topology->subfile_rank == 0) {
+		    printf("%s: time = %lf seconds\n", __func__, (t_end - t_start));
+		    fflush(stdout);
+	    }
+    }
+#endif
     return 0;
 
 err_exit:

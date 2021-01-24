@@ -314,18 +314,29 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
         goto done;
     }
 
+    atomic_init(&sf_ioc_ready, 0);
+
     if (newContext->topology->rank_is_ioc) {
+		int ready;
 		int status = initialize_ioc_threads(newContext);
+
         if (status)
             goto done;
+
+		while((ready = atomic_load(&sf_ioc_ready)) == 0) {
+			usleep(20);
+		}
+		
+		if (newContext->topology->n_io_concentrators > 1)
+			MPI_Barrier(newContext->sf_group_comm);
     }
 
     if (context_id < 0) {
         ret_value = FAIL;
-
         goto done;
     }
     *sf_context = context_id;
+
 
 done:
 	/* Wait for helper threads / IO Concentrators to be initialized */

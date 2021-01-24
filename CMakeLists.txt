@@ -646,6 +646,10 @@ endif ()
 #-----------------------------------------------------------------------------
 # Option to Enable MPI Parallel
 #-----------------------------------------------------------------------------
+option (HDF5_ENABLE_SUBFILING "Enable subfiling build (requires ENABLE_PARALLEL)" OFF)
+if (HDF5_ENABLE_SUBFILING)
+  set (H5_ENABLE_PARALLEL ON)
+endif ()
 option (HDF5_ENABLE_PARALLEL "Enable parallel build (requires MPI)" OFF)
 if (HDF5_ENABLE_PARALLEL)
   find_package(MPI REQUIRED)

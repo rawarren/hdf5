@@ -166,6 +166,7 @@ extern atomic_int sf_workinprogress;
 extern atomic_int sf_work_pending;
 extern atomic_int sf_file_close_count;
 extern atomic_int sf_file_refcount;
+extern atomic_int sf_ioc_ready;
 extern int        sf_verbose_flag;
 
 #    ifndef NDEBUG

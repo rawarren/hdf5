@@ -2741,6 +2741,7 @@ func_init_failed:                                                             \
 /* Private functions, not part of the publicly documented API */
 H5_DLL herr_t H5_init_library(void);
 H5_DLL void H5_term_library(void);
+H5_DLL void H5_term_subfiling(void);
 
 /* Functions to terminate interfaces */
 H5_DLL int H5A_term_package(void);

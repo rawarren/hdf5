@@ -43,7 +43,6 @@
 static hid_t H5FD_SUBFILING_g = 0;
 
 /* These are used for the creation of read or write vectors */
-static hssize_t sf_vlen = -1;
 static hsize_t  *sf_offsets = NULL;
 static hsize_t  *sf_sizes = NULL;
 static void    **sf_bufs = NULL;
@@ -365,7 +364,7 @@ H5FD_subfiling_term(void)
  */
 herr_t
 H5Pset_fapl_subfiling(hid_t                  fapl_id,
-                      H5FD_subfiling_fapl_t *fa)
+					  H5FD_subfiling_fapl_t *fa)
 {
     H5P_genplist_t *plist     = NULL; /* Property list pointer */
     herr_t          ret_value = FAIL;
@@ -1493,7 +1492,6 @@ done:
 static
 herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, hssize_t elements, size_t type_extent, hssize_t *vlen, hsize_t **_offsets, hsize_t **_blocklens, void ***_bufs )
 {
-	int n_dims = H5Sget_simple_extent_ndims(file_space_id);
 	hsize_t *offsets = *_offsets;
 	hsize_t *blocklens = *_blocklens;
 	void   **bufs = *_bufs;
@@ -1504,24 +1502,17 @@ herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addr
 	assert(_blocklens);
 	assert(_bufs);
 
-	if (n_dims > 0) {
-		hsize_t simple_dims[n_dims];
-		hsize_t stride[n_dims];
-		if (H5Sget_simple_extent_dims(file_space_id, simple_dims, stride) < 0) {
-			puts("H5Sget_simple_extent_dims returned an error");
-			return -1;
-		}
 
-		if (*vlen < 0) {
-			offsets = (hsize_t *)malloc((sizeof(haddr_t)));
-			assert(offsets);
+	if (*vlen < 0) {
+		offsets = (hsize_t *)malloc((sizeof(haddr_t)));
+		assert(offsets);
 
-			blocklens = (hsize_t *)malloc((sizeof(hsize_t)));
-			assert(blocklens);
+		blocklens = (hsize_t *)malloc((sizeof(hsize_t)));
+		assert(blocklens);
 
-			bufs = (void **)malloc((sizeof(void **)));
-			assert(bufs);
-		}
+		bufs = (void **)malloc((sizeof(void **)));
+		assert(bufs);
+
 		bufs[0] = nextBuf;
 		offsets[0] = addrBase;
 		blocklens[0] = (hsize_t )((hsize_t)elements * type_extent);
@@ -1702,6 +1693,8 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
     hssize_t num_elem_file = -1, num_elem_mem = -1;
 	H5S_sel_type sel_type;
 	hsize_t mem_nelem, file_nelem;
+	hssize_t sf_vlen = -1;
+
 	const H5S_t *mem_space;
 	const H5S_t *file_space;
 
@@ -1714,7 +1707,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 
     if(num_elem_file != num_elem_mem)
 		puts("number of elements selected in file and memory dataspaces is different");
-		
+
 	if (H5S_get_validated_dataspace(mem_space_id, &mem_space) < 0) {
 		puts("could not get a validated dataspace from mem_space_id");
 	}
@@ -1728,14 +1721,14 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 		sel_type = H5Sget_select_type(file_space_id);
 		switch (sel_type) {
 		case H5S_SEL_NONE:
-			// printf("[%d] H5S_SEL_NONE\n", mpi_rank);
+			printf("[%d] H5S_SEL_NONE\n", mpi_rank);
 			break;
 		case H5S_SEL_POINTS:
 		{
 			haddr_t rank_baseAddr;
 			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
-			// printf("[%d] H5S_SEL_POINTS - num_elem_file: %lld: UNSUPPORTED (for now)\n", mpi_rank, num_elem_file);
+			printf("[%d] H5S_SEL_POINTS - num_elem_file: %lld: UNSUPPORTED (for now)\n", mpi_rank, num_elem_file);
 			ret_value = -1;
 			goto done;
 
@@ -1748,7 +1741,6 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 
-			// printf("[%d] H5S_SEL_HYPERSLABS, file_offset = %lld\n", mpi_rank, rank_baseAddr );
 			if ((status = H5Sis_regular_hyperslab(file_space_id)) < 0) {
 				puts("H5Sis_regular_hyperslab returned an error");
 				ret_value = -1;
@@ -1779,10 +1771,6 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 					goto done;
 				}
 				ret_value = sf_write_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
-
-				/* Possibly restore the sf_vlen value to accurately reflect the malloc sizes */
-				if (sf_vlen < previous_vlen)
-					sf_vlen = previous_vlen;
 			}
 			break;
 		}
@@ -1792,15 +1780,16 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 			haddr_t rank_baseAddr;
 			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
-			// printf("[%d] H5S_SEL_ALL\n", mpi_rank);
-			status = H5Sis_simple(file_space_id);
-			if (status > 0) {
-				if (create_simple_vector(file_space_id, buf, rank_baseAddr, num_elem_mem,
+			if (num_elem_mem > 0) {
+				status = H5Sis_simple(file_space_id);
+				if (status > 0) {
+					if (create_simple_vector(file_space_id, buf, rank_baseAddr, num_elem_mem,
 										 dtype_extent, &sf_vlen, &sf_offsets, &sf_sizes, &sf_bufs) < 0) {
-					puts("Unable to create simple vectors");
-					goto done;
+						puts("Unable to create simple vectors");
+						goto done;
+					}
+					ret_value = sf_write_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
 				}
-				ret_value = sf_write_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
 			}
 			break;
 		}
@@ -1825,6 +1814,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
     herr_t ret_value = SUCCEED;  /* Return value */
     hssize_t num_elem_file = -1, num_elem_mem = -1;
 	H5S_sel_type sel_type;
+	hssize_t sf_vlen = -1;
 
     FUNC_ENTER_PACKAGE
     if((num_elem_file = H5Sget_select_npoints(file_space_id)) < 0)
@@ -1868,7 +1858,6 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 				puts("could not get a validated dataspace from file_space_id");
 			}
 			
-			// printf("[%d] H5S_SEL_HYPERSLABS, file_offset = %lld\n", mpi_rank, rank_baseAddr );
 			if ((status = H5Sis_regular_hyperslab(file_space_id)) < 0) {
 				puts("H5Sis_regular_hyperslab returned an error");
 				ret_value = -1;
@@ -1899,10 +1888,6 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 					goto done;
 				}
 				ret_value = sf_read_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
-
-				/* Possibly restore the sf_vlen value to accurately reflect the malloc sizes */
-				if (sf_vlen < previous_vlen)
-					sf_vlen = previous_vlen;
 			}
 			break;
 		}
@@ -1912,15 +1897,16 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 			haddr_t rank_baseAddr;
 			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
-			// printf("[%d] H5S_SEL_ALL\n", mpi_rank);
-			status = H5Sis_simple(file_space_id);
-			if (status > 0) {
-				if (create_simple_vector(file_space_id, buf, rank_baseAddr, num_elem_mem,
+			if (num_elem_mem > 0) {
+				status = H5Sis_simple(file_space_id);
+				if (status > 0) {
+					if (create_simple_vector(file_space_id, buf, rank_baseAddr, num_elem_mem,
 										 dtype_extent, &sf_vlen, &sf_offsets, &sf_sizes, &sf_bufs) < 0) {
-					puts("Unable to create simple vectors");
-					goto done;
+						puts("Unable to create simple vectors");
+						goto done;
+					}
+					ret_value = sf_read_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
 				}
-				ret_value = sf_read_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
 			}
 			break;
 		}

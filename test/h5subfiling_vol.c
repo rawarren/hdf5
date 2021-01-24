@@ -47,9 +47,6 @@
 /* This connector's header */
 #include "h5subfiling_vol.h"
 
-/* For initial testing... */
-#define SEL_ITER_MAX_SEQ        256
-#define HYPERSLAB_MAX_RANK      8
 
 /**********/
 /* Macros */
@@ -70,61 +67,33 @@
 #define ADDR_MAX      256
 #endif
 
+
 /************/
 /* Typedefs */
 /************/
 
-
-/* Common object and attribute information */
-typedef struct H5VL_subfiling_item_t {
-    H5I_type_t                type;
-    void                     *file;
-} H5VL_subfiling_item_t;
-
-/* Common object information */
-typedef struct H5VL_subfiling_obj_t {
-    H5VL_subfiling_item_t     item;          /* Must be first */
-    char        obj_name[ADDR_MAX];
-} H5VL_subfiling_obj_t;
-
-/* The file struct */
-typedef struct H5VL_subfiling_file_t {
-    H5VL_subfiling_obj_t      obj;           /* Must be first */
-    uint64_t                  h5_file_id;    /* Posix file inode */
-    char                     *file_name;
-    hid_t                     fcpl_id;
-    hid_t                     fapl_id;
-    MPI_Comm                  comm;
-    H5VL_subfiling_info_t    *info;
-    int                       my_rank;
-    int                       num_procs;
-    int                       nobjs;
-    H5_LIST_HEAD(H5VL_subfiling_dset_t)  ids;
-} H5VL_subfiling_file_t;
-
-/* The dataset struct */
-typedef struct H5VL_subfiling_dset_t {
-    H5VL_subfiling_obj_t      obj;          /* Must be first */
-    hid_t                     type_id;
-    hid_t                     space_id;
-    hid_t                     dcpl_id;
-    hid_t                     dapl_id;
-	haddr_t                   f_offset;
-    hbool_t                   mapped;
-    H5_LIST_ENTRY(H5VL_subfiling_dset_t) entry;
-} H5VL_subfiling_dset_t;
-
 /* The pass through VOL info object */
 typedef struct H5VL_subfiling_t {
-    H5VL_subfiling_obj_t      obj;          /* Must be first */
-    hid_t                     under_vol_id; /* ID for underlying VOL connector */
-    void                     *under_object; /* Info object for underlying VOL connector */
+    hid_t  under_vol_id;        /* ID for underlying VOL connector */
+    void   *under_object;       /* Info object for underlying VOL connector */
 } H5VL_subfiling_t;
+
+typedef struct H5VL_subfiling_object_t {
+    hid_t  under_vol_id;        /* ID for underlying VOL connector */
+    void   *under_object;       /* Info object for underlying VOL connector */
+	                            /* The following were added to support subfiling */
+    haddr_t f_offset;			/* Used for writing raw data */
+    uint64_t h5_file_id;		/* This is used as a uuid/key for a subfiling context */
+    hid_t   dcpl_id;            /* Dataset creation property */
+    hid_t   type_id;            /* Datatype of a dataset */
+    char   *name;               /* Files, Groups, and Datasets have names */
+
+} H5VL_subfiling_object_t;
 
 /* The pass through VOL wrapper context */
 typedef struct H5VL_subfiling_wrap_ctx_t {
-    hid_t                    under_vol_id;  /* VOL ID for under VOL */
-    void                  *under_wrap_ctx;  /* Object wrapping context for under VOL */
+    hid_t under_vol_id;         /* VOL ID for under VOL */
+    void *under_wrap_ctx;       /* Object wrapping context for under VOL */
 } H5VL_subfiling_wrap_ctx_t;
 
 
@@ -140,11 +109,9 @@ static herr_t H5VL_subfiling_request_specific_reissue(void *obj, hid_t connector
 static herr_t H5VL_subfiling_link_create_reissue(H5VL_link_create_type_t create_type,
     void *obj, const H5VL_loc_params_t *loc_params, hid_t connector_id,
     hid_t lcpl_id, hid_t lapl_id, hid_t dxpl_id, void **req, ...);
-static H5VL_subfiling_t *H5VL_subfiling_new_obj(void *under_obj,
-    hid_t under_vol_id);
 static herr_t H5VL_subfiling_free_obj(H5VL_subfiling_t *obj);
+static H5VL_subfiling_t *H5VL__subfiling_new_obj(void *under_obj, hid_t under_vol_id);
 
-static H5VL_subfiling_dset_t *H5VL__subfiling_dset_init(H5VL_subfiling_item_t *item);
 
 /* "Management" callbacks */
 static herr_t H5VL_subfiling_init(hid_t vipl_id);
@@ -160,7 +127,8 @@ static herr_t H5VL_subfiling_str_to_info(const char *str, void **info);
 /* VOL object wrap / retrieval callbacks */
 static void *H5VL_subfiling_get_object(const void *obj);
 static herr_t H5VL_subfiling_get_wrap_ctx(const void *obj, void **wrap_ctx);
-static void *H5VL_subfiling_wrap_object(void *obj, H5I_type_t obj_type, void *wrap_ctx);
+static void *H5VL_subfiling_wrap_object(void *obj, H5I_type_t obj_type,
+    void *wrap_ctx);
 static void *H5VL_subfiling_unwrap_object(void *obj);
 static herr_t H5VL_subfiling_free_wrap_ctx(void *obj);
 
@@ -250,132 +218,138 @@ static herr_t H5VL_subfiling_token_from_str(void *obj, H5I_type_t obj_type, cons
 /* Generic optional callback */
 static herr_t H5VL_subfiling_optional(void *obj, int op_type, hid_t dxpl_id, void **req, va_list arguments);
 
+/* Extra Help for subfiling */
+static herr_t dataset_get_offset_helper(H5VL_subfiling_object_t *dset, ...);
+static herr_t dataset_get_dcpl_helper(H5VL_subfiling_object_t *dset, ...);
+
+
 /*******************/
 /* Local variables */
 /*******************/
 
+static int mpi_size = -1;
+static int mpi_rank = -1;
+
+static int enable_vol_passthru = 0;
+
 /* Pass through VOL connector class struct */
 static const H5VL_class_t H5VL_subfiling_g = {
-    H5VL_SUBFILING_VERSION,                      /* version          */
-    (H5VL_class_value_t)H5VL_SUBFILING_VALUE,    /* value            */
-    H5VL_SUBFILING_NAME,                         /* name             */
-    0,                                           /* capability flags */
-    H5VL_subfiling_init,                         /* initialize       */
-    H5VL_subfiling_term,                         /* terminate        */
-    {                                           /* INFO_CLS          */
-        sizeof(H5VL_subfiling_info_t),           /* size             */
-        H5VL_subfiling_info_copy,                /* copy             */
-        H5VL_subfiling_info_cmp,                 /* compare          */
-        H5VL_subfiling_info_free,                /* free             */
-        H5VL_subfiling_info_to_str,              /* to_str           */
-        H5VL_subfiling_str_to_info               /* from_str         */
+    H5VL_SUBFILING_VERSION,                          /* version      */
+    (H5VL_class_value_t)H5VL_SUBFILING_VALUE,        /* value        */
+    H5VL_SUBFILING_NAME,                             /* name         */
+    0,                                              /* capability flags */
+    H5VL_subfiling_init,                         /* initialize   */
+    H5VL_subfiling_term,                         /* terminate    */
+    {                                           /* info_cls */
+        sizeof(H5VL_subfiling_info_t),           /* size    */
+        H5VL_subfiling_info_copy,                /* copy    */
+        H5VL_subfiling_info_cmp,                 /* compare */
+        H5VL_subfiling_info_free,                /* free    */
+        H5VL_subfiling_info_to_str,              /* to_str  */
+        H5VL_subfiling_str_to_info               /* from_str */
     },
-    {                                           /* WRAP_CLS          */
-        H5VL_subfiling_get_object,               /* get_object       */
-        H5VL_subfiling_get_wrap_ctx,             /* get_wrap_ctx     */
-        H5VL_subfiling_wrap_object,              /* wrap_object      */
-        H5VL_subfiling_unwrap_object,            /* unwrap_object    */
-        H5VL_subfiling_free_wrap_ctx             /* free_wrap_ctx    */
+    {                                           /* wrap_cls */
+        H5VL_subfiling_get_object,               /* get_object   */
+        H5VL_subfiling_get_wrap_ctx,             /* get_wrap_ctx */
+        H5VL_subfiling_wrap_object,              /* wrap_object  */
+        H5VL_subfiling_unwrap_object,            /* unwrap_object */
+        H5VL_subfiling_free_wrap_ctx             /* free_wrap_ctx */
     },
-    {                                           /* ATTRIBUTE_CLS     */
-        H5VL_subfiling_attr_create,              /* create           */
-        H5VL_subfiling_attr_open,                /* open             */
-        H5VL_subfiling_attr_read,                /* read             */
-        H5VL_subfiling_attr_write,               /* write            */
-        H5VL_subfiling_attr_get,                 /* get              */
-        H5VL_subfiling_attr_specific,            /* specific         */
-        H5VL_subfiling_attr_optional,            /* optional         */
-        H5VL_subfiling_attr_close                /* close            */
+    {                                           /* attribute_cls */
+        H5VL_subfiling_attr_create,              /* create */
+        H5VL_subfiling_attr_open,                /* open */
+        H5VL_subfiling_attr_read,                /* read */
+        H5VL_subfiling_attr_write,               /* write */
+        H5VL_subfiling_attr_get,                 /* get */
+        H5VL_subfiling_attr_specific,            /* specific */
+        H5VL_subfiling_attr_optional,            /* optional */
+        H5VL_subfiling_attr_close                /* close */
     },
-    {                                           /* DATASET_CLS       */
-        H5VL_subfiling_dataset_create,           /* create           */
-        H5VL_subfiling_dataset_open,             /* open             */
-        H5VL_subfiling_dataset_read,             /* read             */
-        H5VL_subfiling_dataset_write,            /* write            */
-        H5VL_subfiling_dataset_get,              /* get              */
-        H5VL_subfiling_dataset_specific,         /* specific         */
-        H5VL_subfiling_dataset_optional,         /* optional         */
-        H5VL_subfiling_dataset_close             /* close            */
+    {                                           /* dataset_cls */
+        H5VL_subfiling_dataset_create,           /* create */
+        H5VL_subfiling_dataset_open,             /* open */
+        H5VL_subfiling_dataset_read,             /* read */
+        H5VL_subfiling_dataset_write,            /* write */
+        H5VL_subfiling_dataset_get,              /* get */
+        H5VL_subfiling_dataset_specific,         /* specific */
+        H5VL_subfiling_dataset_optional,         /* optional */
+        H5VL_subfiling_dataset_close             /* close */
     },
-    {                                           /* DATATYPE_CLS      */
-        H5VL_subfiling_datatype_commit,          /* commit           */
-        H5VL_subfiling_datatype_open,            /* open             */
-        H5VL_subfiling_datatype_get,             /* get_size         */
-        H5VL_subfiling_datatype_specific,        /* specific         */
-        H5VL_subfiling_datatype_optional,        /* optional         */
-        H5VL_subfiling_datatype_close            /* close            */
+    {                                           /* datatype_cls */
+        H5VL_subfiling_datatype_commit,          /* commit */
+        H5VL_subfiling_datatype_open,            /* open */
+        H5VL_subfiling_datatype_get,             /* get_size */
+        H5VL_subfiling_datatype_specific,        /* specific */
+        H5VL_subfiling_datatype_optional,        /* optional */
+        H5VL_subfiling_datatype_close            /* close */
     },
-    {                                           /* FILE_CLS          */
-        H5VL_subfiling_file_create,              /* create           */
-        H5VL_subfiling_file_open,                /* open             */
-        H5VL_subfiling_file_get,                 /* get              */
-        H5VL_subfiling_file_specific,            /* specific         */
-        H5VL_subfiling_file_optional,            /* optional         */
-        H5VL_subfiling_file_close                /* close            */
+    {                                           /* file_cls */
+        H5VL_subfiling_file_create,              /* create */
+        H5VL_subfiling_file_open,                /* open */
+        H5VL_subfiling_file_get,                 /* get */
+        H5VL_subfiling_file_specific,            /* specific */
+        H5VL_subfiling_file_optional,            /* optional */
+        H5VL_subfiling_file_close                /* close */
     },
-    {                                           /* GROUP_CLS         */
-        H5VL_subfiling_group_create,             /* create           */
-        H5VL_subfiling_group_open,               /* open             */
-        H5VL_subfiling_group_get,                /* get              */
-        H5VL_subfiling_group_specific,           /* specific         */
-        H5VL_subfiling_group_optional,           /* optional         */
-        H5VL_subfiling_group_close               /* close            */
+    {                                           /* group_cls */
+        H5VL_subfiling_group_create,             /* create */
+        H5VL_subfiling_group_open,               /* open */
+        H5VL_subfiling_group_get,                /* get */
+        H5VL_subfiling_group_specific,           /* specific */
+        H5VL_subfiling_group_optional,           /* optional */
+        H5VL_subfiling_group_close               /* close */
     },
-    {                                           /* LINK_CLS          */
-        H5VL_subfiling_link_create,              /* create           */
-        H5VL_subfiling_link_copy,                /* copy             */
-        H5VL_subfiling_link_move,                /* move             */
-        H5VL_subfiling_link_get,                 /* get              */
-        H5VL_subfiling_link_specific,            /* specific         */
-        H5VL_subfiling_link_optional             /* optional         */
+    {                                           /* link_cls */
+        H5VL_subfiling_link_create,              /* create */
+        H5VL_subfiling_link_copy,                /* copy */
+        H5VL_subfiling_link_move,                /* move */
+        H5VL_subfiling_link_get,                 /* get */
+        H5VL_subfiling_link_specific,            /* specific */
+        H5VL_subfiling_link_optional             /* optional */
     },
-    {                                           /* OBJECT_CLS        */
-        H5VL_subfiling_object_open,              /* open             */
-        H5VL_subfiling_object_copy,              /* copy             */
-        H5VL_subfiling_object_get,               /* get              */
-        H5VL_subfiling_object_specific,          /* specific         */
-        H5VL_subfiling_object_optional           /* optional         */
+    {                                           /* object_cls */
+        H5VL_subfiling_object_open,              /* open */
+        H5VL_subfiling_object_copy,              /* copy */
+        H5VL_subfiling_object_get,               /* get */
+        H5VL_subfiling_object_specific,          /* specific */
+        H5VL_subfiling_object_optional           /* optional */
     },
-    {                                           /* INTROSPECT_CLS    */
-        H5VL_subfiling_introspect_get_conn_cls,  /* get_conn_cls     */
-        H5VL_subfiling_introspect_opt_query,     /* opt_query        */
+    {                                           /* introspect_cls */
+        H5VL_subfiling_introspect_get_conn_cls,  /* get_conn_cls */
+        H5VL_subfiling_introspect_opt_query,     /* opt_query */
     },
-    {                                           /* REQUEST_CLS       */
-        H5VL_subfiling_request_wait,             /* wait             */
-        H5VL_subfiling_request_notify,           /* notify           */
-        H5VL_subfiling_request_cancel,           /* cancel           */
-        H5VL_subfiling_request_specific,         /* specific         */
-        H5VL_subfiling_request_optional,         /* optional         */
-        H5VL_subfiling_request_free              /* free             */
+    {                                           /* request_cls */
+        H5VL_subfiling_request_wait,             /* wait */
+        H5VL_subfiling_request_notify,           /* notify */
+        H5VL_subfiling_request_cancel,           /* cancel */
+        H5VL_subfiling_request_specific,         /* specific */
+        H5VL_subfiling_request_optional,         /* optional */
+        H5VL_subfiling_request_free              /* free */
     },
-    {                                           /* BLOB_CLS          */
-        H5VL_subfiling_blob_put,                 /* put              */
-        H5VL_subfiling_blob_get,                 /* get              */
-        H5VL_subfiling_blob_specific,            /* specific         */
-        H5VL_subfiling_blob_optional             /* optional         */
+    {                                           /* blob_cls */
+        H5VL_subfiling_blob_put,                 /* put */
+        H5VL_subfiling_blob_get,                 /* get */
+        H5VL_subfiling_blob_specific,            /* specific */
+        H5VL_subfiling_blob_optional             /* optional */
     },
-    {                                           /* TOKEN_CLS         */
-        H5VL_subfiling_token_cmp,                /* cmp              */
-        H5VL_subfiling_token_to_str,             /* to_str           */
-        H5VL_subfiling_token_from_str            /* from_str         */
+    {                                           /* token_cls */
+        H5VL_subfiling_token_cmp,                /* cmp */
+        H5VL_subfiling_token_to_str,             /* to_str */
+        H5VL_subfiling_token_from_str              /* from_str */
     },
-    H5VL_subfiling_optional                     /* OPTIONAL          */
+    H5VL_subfiling_optional                  /* optional */
 };
+
+/* Externals */
+extern char *H5F_get_extpath(void *f);
 
 /* The connector identification number, initialized at runtime */
 static hid_t H5VL_SUBFILING_g = H5I_INVALID_HID;
 H5PL_type_t H5PLget_plugin_type(void) {return H5PL_TYPE_VOL;}
 const void *H5PLget_plugin_info(void) {return &H5VL_subfiling_g;}
-
-extern char *H5F_get_extpath(void *f);
-
-static int file_create_count = 0;
-static int file_open_count = 0;
-static int file_close_count = 0;
-
 
 /*-------------------------------------------------------------------------
- * Function:    H5VL__pass_through_new_obj
+ * Function:    H5VL__subfiling_new_obj
  *
  * Purpose:     Create a new pass through object for an underlying object
  *
@@ -388,7 +362,7 @@ static int file_close_count = 0;
  *-------------------------------------------------------------------------
  */
 static H5VL_subfiling_t *
-H5VL_subfiling_new_obj(void *under_obj, hid_t under_vol_id)
+H5VL__subfiling_new_obj(void *under_obj, hid_t under_vol_id)
 {
     H5VL_subfiling_t *new_obj;
 
@@ -398,11 +372,39 @@ H5VL_subfiling_new_obj(void *under_obj, hid_t under_vol_id)
     H5Iinc_ref(new_obj->under_vol_id);
 
     return new_obj;
-} /* end H5VL__pass_through_new_obj() */
+} /* end H5VL__subfiling_new_obj() */
+
+/*-------------------------------------------------------------------------
+ * Function:    H5VL__subfiling_new_object
+ *
+ * Purpose:     Create a new pass through object for an underlying object
+ *              This is a slightly larger structure to accomodate additional
+ *              subfiling information.
+ *
+ * Return:      Success:    Pointer to the new pass through object
+ *              Failure:    NULL
+ *
+ * Programmer:  Richard Warren
+ *              Monday, December 3, 2018
+ *
+ *-------------------------------------------------------------------------
+ */
+static H5VL_subfiling_object_t *
+H5VL__subfiling_new_object(void *under_obj, hid_t under_vol_id)
+{
+    H5VL_subfiling_object_t *new_obj;
+
+    new_obj = (H5VL_subfiling_object_t *)calloc(1, sizeof(H5VL_subfiling_object_t));
+    new_obj->under_object = under_obj;
+    new_obj->under_vol_id = under_vol_id;
+    H5Iinc_ref(new_obj->under_vol_id);
+
+    return new_obj;
+} /* end H5VL__subfiling_new_dataset() */
 
 
 /*-------------------------------------------------------------------------
- * Function:    H5VL__pass_through_free_obj
+ * Function:    H5VL__subfiling_free_obj
  *
  * Purpose:     Release a pass through object
  *
@@ -431,7 +433,7 @@ H5VL_subfiling_free_obj(H5VL_subfiling_t *obj)
     free(obj);
 
     return 0;
-} /* end H5VL__pass_through_free_obj() */
+} /* end H5VL__subfiling_free_obj() */
 
 
 /*-------------------------------------------------------------------------
@@ -474,11 +476,36 @@ H5VL_subfiling_register(void)
 static herr_t
 H5VL_subfiling_init(hid_t vipl_id)
 {
-	// printf("%s:%d: Subfiling VOL is called.\n", __func__, __LINE__);
+    int mpi_enabled = 0;
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INIT\n");
+    printf("------- EXT PASS THROUGH VOL INIT\n");
 #endif
+	if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
+       if (mpi_enabled) {
+		   int mpi_provides;
+           MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+		   MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+		   MPI_Query_thread(&mpi_provides);
+		   if (mpi_provides != MPI_THREAD_MULTIPLE)
+			   puts("Subfiling requires that MPI be initialized using MPI_THREAD_MULTIPLE");
+		   assert(mpi_provides == MPI_THREAD_MULTIPLE);
+       }
+    }
 
+    if (mpi_rank == 0) {
+		char *passthru_enable = getenv("VOL_PASSTHRU");
+		if (passthru_enable != NULL) {
+			int value_check = atoi(passthru_enable);
+			if (value_check > 0) 
+                enable_vol_passthru = 1;
+		}
+		/* Make it obvious that the VOL is being used... */
+		printf("%s called\n", __func__);
+	}
+
+	if (mpi_size > 0) {
+		MPI_Bcast(&enable_vol_passthru, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	}
     /* Shut compiler up about unused parameter */
     vipl_id = vipl_id;
 
@@ -503,7 +530,7 @@ static herr_t
 H5VL_subfiling_term(void)
 {
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL TERM\n");
+    printf("------- EXT PASS THROUGH VOL TERM\n");
 #endif
 
     /* Reset VOL ID */
@@ -530,7 +557,7 @@ H5VL_subfiling_info_copy(const void *_info)
     H5VL_subfiling_info_t *new_info;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INFO Copy\n");
+    printf("------- EXT PASS THROUGH VOL INFO Copy\n");
 #endif
 
     /* Allocate new VOL info struct for the pass through connector */
@@ -564,7 +591,7 @@ H5VL_subfiling_info_cmp(int *cmp_value, const void *_info1, const void *_info2)
     const H5VL_subfiling_info_t *info2 = (const H5VL_subfiling_info_t *)_info2;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INFO Compare\n");
+    printf("------- EXT PASS THROUGH VOL INFO Compare\n");
 #endif
 
     /* Sanity checks */
@@ -608,7 +635,7 @@ H5VL_subfiling_info_free(void *_info)
     hid_t err_id;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INFO Free\n");
+    printf("------- EXT PASS THROUGH VOL INFO Free\n");
 #endif
 
     err_id = H5Eget_current_stack();
@@ -646,7 +673,7 @@ H5VL_subfiling_info_to_str(const void *_info, char **str)
     size_t under_vol_str_len = 0;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INFO To String\n");
+    printf("------- EXT PASS THROUGH VOL INFO To String\n");
 #endif
 
     /* Get value and string for underlying VOL connector */
@@ -692,7 +719,7 @@ H5VL_subfiling_str_to_info(const char *str, void **_info)
     void *under_vol_info = NULL;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INFO String To Info\n");
+    printf("------- EXT PASS THROUGH VOL INFO String To Info\n");
 #endif
 
     /* Retrieve the underlying VOL connector value and info */
@@ -741,7 +768,7 @@ H5VL_subfiling_get_object(const void *obj)
     const H5VL_subfiling_t *o = (const H5VL_subfiling_t *)obj;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL Get object\n");
+    printf("------- EXT PASS THROUGH VOL Get object\n");
 #endif
 
     return H5VLget_object(o->under_object, o->under_vol_id);
@@ -765,7 +792,7 @@ H5VL_subfiling_get_wrap_ctx(const void *obj, void **wrap_ctx)
     H5VL_subfiling_wrap_ctx_t *new_wrap_ctx;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL WRAP CTX Get\n");
+    printf("------- EXT PASS THROUGH VOL WRAP CTX Get\n");
 #endif
 
     /* Allocate new VOL object wrapping context for the pass through connector */
@@ -801,13 +828,13 @@ H5VL_subfiling_wrap_object(void *obj, H5I_type_t obj_type, void *_wrap_ctx)
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL WRAP Object\n");
+    printf("------- EXT PASS THROUGH VOL WRAP Object\n");
 #endif
 
     /* Wrap the object with the underlying VOL */
     under = H5VLwrap_object(obj, obj_type, wrap_ctx->under_vol_id, wrap_ctx->under_wrap_ctx);
     if(under)
-        new_obj = H5VL_subfiling_new_obj(under, wrap_ctx->under_vol_id);
+        new_obj = H5VL__subfiling_new_obj(under, wrap_ctx->under_vol_id);
     else
         new_obj = NULL;
 
@@ -833,7 +860,7 @@ H5VL_subfiling_unwrap_object(void *obj)
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL UNWRAP Object\n");
+    printf("------- EXT PASS THROUGH VOL UNWRAP Object\n");
 #endif
 
     /* Unrap the object with the underlying VOL */
@@ -866,7 +893,7 @@ H5VL_subfiling_free_wrap_ctx(void *_wrap_ctx)
     hid_t err_id;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL WRAP CTX Free\n");
+    printf("------- EXT PASS THROUGH VOL WRAP CTX Free\n");
 #endif
 
     err_id = H5Eget_current_stack();
@@ -905,16 +932,16 @@ H5VL_subfiling_attr_create(void *obj, const H5VL_loc_params_t *loc_params,
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Create\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Create\n");
 #endif
 
     under = H5VLattr_create(o->under_object, loc_params, o->under_vol_id, name, type_id, space_id, acpl_id, aapl_id, dxpl_id, req);
     if(under) {
-        attr = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        attr = H5VL__subfiling_new_obj(under, o->under_vol_id);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         attr = NULL;
@@ -942,16 +969,16 @@ H5VL_subfiling_attr_open(void *obj, const H5VL_loc_params_t *loc_params,
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Open\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Open\n");
 #endif
 
     under = H5VLattr_open(o->under_object, loc_params, o->under_vol_id, name, aapl_id, dxpl_id, req);
     if(under) {
-        attr = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        attr = H5VL__subfiling_new_obj(under, o->under_vol_id);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         attr = NULL;
@@ -978,14 +1005,14 @@ H5VL_subfiling_attr_read(void *attr, hid_t mem_type_id, void *buf,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Read\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Read\n");
 #endif
 
     ret_value = H5VLattr_read(o->under_object, o->under_vol_id, mem_type_id, buf, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_attr_read() */
@@ -1009,14 +1036,14 @@ H5VL_subfiling_attr_write(void *attr, hid_t mem_type_id, const void *buf,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Write\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Write\n");
 #endif
 
     ret_value = H5VLattr_write(o->under_object, o->under_vol_id, mem_type_id, buf, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_attr_write() */
@@ -1040,14 +1067,14 @@ H5VL_subfiling_attr_get(void *obj, H5VL_attr_get_t get_type, hid_t dxpl_id,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Get\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Get\n");
 #endif
 
     ret_value = H5VLattr_get(o->under_object, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_attr_get() */
@@ -1071,14 +1098,14 @@ H5VL_subfiling_attr_specific(void *obj, const H5VL_loc_params_t *loc_params,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Specific\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Specific\n");
 #endif
 
     ret_value = H5VLattr_specific(o->under_object, loc_params, o->under_vol_id, specific_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_attr_specific() */
@@ -1102,14 +1129,14 @@ H5VL_subfiling_attr_optional(void *obj, H5VL_attr_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Optional\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Optional\n");
 #endif
 
     ret_value = H5VLattr_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_attr_optional() */
@@ -1132,14 +1159,14 @@ H5VL_subfiling_attr_close(void *attr, hid_t dxpl_id, void **req)
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL ATTRIBUTE Close\n");
+    printf("------- EXT PASS THROUGH VOL ATTRIBUTE Close\n");
 #endif
 
     ret_value = H5VLattr_close(o->under_object, o->under_vol_id, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     /* Release our wrapper, if underlying attribute was closed */
     if(ret_value >= 0)
@@ -1148,59 +1175,7 @@ H5VL_subfiling_attr_close(void *attr, hid_t dxpl_id, void **req)
     return ret_value;
 } /* end H5VL_subfiling_attr_close() */
 
-static herr_t
-dataset_get_offset_helper(H5VL_subfiling_t *dset, ...)
-{
-    herr_t ret_value;
-	va_list ap;
-	va_start(ap, dset);
-	if ((ret_value = H5VL_subfiling_dataset_optional(dset, H5VL_NATIVE_DATASET_GET_OFFSET, 0, NULL, ap)) < 0)
-		puts("unable to get file_offset");
-	va_end(ap);
-	return ret_value;
-}
-
-static herr_t
-dataset_get_dcpl_helper(H5VL_subfiling_t *dset, ...)
-{
-	herr_t ret_value;
-	va_list ap;
-	va_start(ap, dset);
-	if ((ret_value = H5VL_subfiling_dataset_get(dset, H5VL_DATASET_GET_DCPL, 0, NULL, ap)) < 0)
-		puts("unable to get dataset dcpl");
-	va_end(ap);
-	return ret_value;	
-}
-
-
-/*---------------------------------------------------------------------------*/
-static H5VL_subfiling_dset_t *
-H5VL__subfiling_dset_init(H5VL_subfiling_item_t *item)
-{
-    H5VL_subfiling_dset_t *dset = NULL;
-    
-    /* Allocate the dataset object that is returned to the user */
-    if(NULL == (dset = malloc(sizeof(H5VL_subfiling_dset_t)))) {
-        puts("can't allocate subfiling dataset struct");
-		return NULL;
-	}
-    memset(dset, 0, sizeof(H5VL_subfiling_dset_t));
-    
-    dset->obj.item.type = H5I_DATASET;
-    dset->obj.item.file = item->file;
-    dset->mapped = 0;
-    dset->type_id = -1;
-    dset->space_id = -1;
-    dset->dcpl_id = -1;
-    dset->dapl_id = -1;
-    
-    /* Set return value */
-    return((void *)dset);
-    
-done:
-    return NULL;
-} /* end H5VL__subfiling_dset_init() */
-
+
 /*-------------------------------------------------------------------------
  * Function:    H5VL_subfiling_dataset_create
  *
@@ -1214,73 +1189,40 @@ done:
 static void *
 H5VL_subfiling_dataset_create(void *obj, const H5VL_loc_params_t *loc_params,
     const char *name, hid_t lcpl_id, hid_t type_id, hid_t space_id,
-		  hid_t dcpl_id, hid_t dapl_id, hid_t dxpl_id, void **req )
+    hid_t dcpl_id, hid_t dapl_id, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)obj;
-	H5VL_subfiling_dset_t *subfiling_dset;
-	H5VL_subfiling_dset_t *_dset = NULL;
-	H5VL_subfiling_t *dset = NULL;
+    H5VL_subfiling_object_t *dset;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)obj;
 	haddr_t f_offset;
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Create\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Create\n");
 #endif
-	if (NULL == (subfiling_dset = H5VL__subfiling_dset_init(&o->obj.item))) {
-		perror("dset_init");
-		return NULL;
-	}
-	else {
-		subfiling_dset->obj.item.file = o->obj.item.file;
-		strcpy(subfiling_dset->obj.obj_name, name);
 
-		if((subfiling_dset->type_id = H5Tcopy(type_id)) < 0) {
-			fprintf(stderr, "failed to copy datatype\n");
-			free(subfiling_dset);
-			goto done;
-		}
-		if((subfiling_dset->space_id = H5Scopy(space_id)) < 0) {
-			fprintf(stderr, "failed to copy dataspace\n");
-			free(subfiling_dset);
-			goto done;
-		}
-		if(H5Sselect_all(subfiling_dset->space_id) < 0) {
-			fprintf(stderr, "can't change selection\n");
-			free(subfiling_dset);
-			goto done;
-		}
-		if((subfiling_dset->dcpl_id = H5Pcopy(dcpl_id)) < 0) {
-			fprintf(stderr, "failed to copy dcpl\n");
-			free(subfiling_dset);
-			goto done;
-		}
-		if((subfiling_dset->dapl_id = H5Pcopy(dapl_id)) < 0) {
-			fprintf(stderr, "failed to copy dapl\n");
-			free(subfiling_dset);
-			goto done;
-		}
-	}
-
-    under = H5VLdataset_create(o->under_object, loc_params, o->under_vol_id,
-		    name, lcpl_id, type_id, space_id, dcpl_id,  dapl_id, dxpl_id, req);
-
+    under = H5VLdataset_create(o->under_object, loc_params, o->under_vol_id, name, lcpl_id, type_id, space_id, dcpl_id,  dapl_id, dxpl_id, req);
     if(under) {
-        dset = H5VL_subfiling_new_obj(under, o->under_vol_id);
-		dset->obj.item.file = subfiling_dset;
-		subfiling_dset->f_offset = 0;
-		if (dataset_get_offset_helper(dset, &f_offset) < 0)
-			puts("Unable to get file_offset");
-		else subfiling_dset->f_offset = f_offset;
+        dset = H5VL__subfiling_new_object(under, o->under_vol_id);
+        assert(dset != NULL);
+        if (!enable_vol_passthru) {
+			if (dataset_get_offset_helper(dset, &f_offset) < 0)
+				puts("Unable to get file_offset");
+			else {
+				dset->f_offset = f_offset;
+				dset->h5_file_id = o->h5_file_id;
+				dset->dcpl_id = H5Pcopy(dcpl_id);
+				dset->type_id = H5Tcopy(type_id);
+				dset->name = strdup(name);
+			}
+		}
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
-
+            *req = H5VL__subfiling_new_object(*req, o->under_vol_id);
     } /* end if */
     else
         dset = NULL;
 
-done:
     return (void *)dset;
 } /* end H5VL_subfiling_dataset_create() */
 
@@ -1299,57 +1241,40 @@ static void *
 H5VL_subfiling_dataset_open(void *obj, const H5VL_loc_params_t *loc_params,
     const char *name, hid_t dapl_id, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)obj;
-	H5VL_subfiling_dset_t *subfiling_dset;
-	H5VL_subfiling_dset_t *_dset = NULL;
-	H5VL_subfiling_t *dset = NULL;
-	hid_t dcpl_id;
+    H5VL_subfiling_object_t *dset;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)obj;
 	haddr_t f_offset;
+	hid_t dcpl_id;
     void *under;
 
-
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Open\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Open\n");
 #endif
-
-	if (NULL == (subfiling_dset = H5VL__subfiling_dset_init(&o->obj.item))) {
-		perror("dset_init");
-		return NULL;
-	}
-	else {
-		subfiling_dset->obj.item.type = H5I_DATASET;
-		subfiling_dset->obj.item.file = o->obj.item.file;
-		strcpy(subfiling_dset->obj.obj_name, name);
-
-		if((subfiling_dset->dapl_id = H5Pcopy(dapl_id)) < 0) {
-			fprintf(stderr, "failed to copy dapl\n");
-			free(subfiling_dset);
-			goto done;
-		}
-	}
 
     under = H5VLdataset_open(o->under_object, loc_params, o->under_vol_id, name, dapl_id, dxpl_id, req);
     if(under) {
-        dset = H5VL_subfiling_new_obj(under, o->under_vol_id);
-		dset->obj.item.file = subfiling_dset;
-		subfiling_dset->f_offset = 0;
-		if (dataset_get_offset_helper(dset, &f_offset) < 0)
-			puts("Unable to get file_offset");
-		else subfiling_dset->f_offset = f_offset;
-		if (dataset_get_dcpl_helper(dset, &dcpl_id) < 0)
-			puts("Unable to get dcpl");
-		else if ((subfiling_dset->dcpl_id = H5Pcopy(dcpl_id)) < 1)
-			puts("Unable to get dcpl_id");
+        dset = H5VL__subfiling_new_object(under, o->under_vol_id);
+        assert(dset != NULL);
 
+		if (!enable_vol_passthru) {
+			if (dataset_get_offset_helper(dset, &f_offset) < 0)
+				puts("Unable to get file_offset");
+			else {
+				dset->h5_file_id = o->h5_file_id;
+				dset->f_offset = f_offset;
+				if (dataset_get_dcpl_helper(dset, &dcpl_id) < 0)
+					puts("Unable to get dataset dcpl");
+				else dset->dcpl_id = H5Pcopy(dcpl_id);
+				dset->name = strdup(name);
+			}
+		}
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
-
+            *req = H5VL__subfiling_new_object(*req, o->under_vol_id);
     } /* end if */
     else
         dset = NULL;
 
-done:
     return (void *)dset;
 } /* end H5VL_subfiling_dataset_open() */
 
@@ -1368,61 +1293,44 @@ static herr_t
 H5VL_subfiling_dataset_read(void *dset, hid_t mem_type_id, hid_t mem_space_id,
     hid_t file_space_id, hid_t plist_id, void *buf, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)dset;
-	H5VL_subfiling_dset_t *subfiling_dset = NULL;
-	H5VL_subfiling_file_t *subfiling_file = NULL;
-	H5S_sel_type sel_type;
-	// H5S_t *mem_space = NULL;
-	// H5S_t *file_space = NULL;
-	H5D_layout_t layout_method;
-	uint64_t h5_file_id;
-	size_t type_extent = 1;
-	int is_simple, simple_n_dims;
-    int ndims, nblocks, my_rank;
-    hid_t real_file_space_id;
-    hid_t real_mem_space_id;
-    hssize_t num_elem_file = -1, num_elem_mem = -1;
-	haddr_t file_offset;
-    herr_t ret_value;
-
-	hssize_t n_blocks;
-	/* For regular hyperslabs */
-	haddr_t start[H5S_MAX_RANK];
-	hsize_t stride[H5S_MAX_RANK];
-	hsize_t count[H5S_MAX_RANK];
-	hsize_t blocklen[H5S_MAX_RANK];
-	void   *addrs[H5S_MAX_RANK];
-
-	assert(dset);
-	subfiling_dset = o->obj.item.file;
-	assert(subfiling_dset);
-	subfiling_file = subfiling_dset->obj.item.file;
-	assert(subfiling_file);
-
-	h5_file_id = (uint64_t)subfiling_file->h5_file_id;
+    H5D_layout_t layout_method = H5D_LAYOUT_ERROR;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)dset;
+	herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Read\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Read\n");
 #endif
+    assert((o != NULL));
 
-	type_extent = H5Tget_size(mem_type_id);
-
-	if((layout_method = H5Pget_layout(subfiling_dset->dcpl_id)) < 0)
-		puts("can't get layout property");
-
-	if (layout_method == H5D_CONTIGUOUS) {
-		ret_value = H5FD__dataset_read_contiguous(h5_file_id, subfiling_dset->f_offset, type_extent,
-							   subfiling_file->my_rank, subfiling_file->num_procs, o->under_object,
-							   mem_type_id, mem_space_id, file_space_id, plist_id, buf);
+	if (enable_vol_passthru) {
+        ret_value = H5VLdataset_read(o->under_object, o->under_vol_id,
+									 mem_type_id, mem_space_id,
+									 file_space_id, plist_id, buf, req);
 	}
 	else {
-		ret_value = H5VLdataset_read(o->under_object, o->under_vol_id, 
-				    mem_type_id, mem_space_id, file_space_id, plist_id, buf, req);
+		uint64_t h5_file_id;
+		size_t type_extent = 1;
+
+		type_extent = H5Tget_size(mem_type_id);
+
+		if((layout_method = H5Pget_layout(o->dcpl_id)) < 0)
+			puts("can't get layout property");
+
+		h5_file_id = o->h5_file_id;    
+
+		if (layout_method == H5D_CONTIGUOUS) {
+			// printf("type_extent = %ld - ", type_extent);
+			// puts("layout_method = H5D_CONTIGUOUS");
+			ret_value = H5FD__dataset_read_contiguous(h5_file_id, o->f_offset, type_extent,
+												  mpi_rank, mpi_size, o->under_object,
+												  mem_type_id, mem_space_id,
+												  file_space_id, plist_id, buf);
+		}
 	}
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_dataset_read() */
@@ -1442,78 +1350,43 @@ static herr_t
 H5VL_subfiling_dataset_write(void *dset, hid_t mem_type_id, hid_t mem_space_id,
     hid_t file_space_id, hid_t plist_id, const void *buf, void **req)
 {
-	/* 
-	 *   The incoming dset is a H5VL_subfiling_t and has the following fields::
-	 *     The 'obj' field is VOL specfic and references the vol object that are
-	 *     created and are used to manage the underlying 'native' objects.
-	 *     Once created, the dataset object can be used to read and write. The
-	 *     subfiling_dset_t maintains the subfiling_file_t as a reference for
-	 *     use with the actual subfiling VFD componenets.  Example:
-	 *     the subfile_dset is referenced by o->obj.item.file;
-	 *     the subfile_file is referenced by subfile_dset->obj.item.file.
-	 *      
-	 *     o->obj:          (This will contain the specfics of the created dataset,
-	 *                      e.g. the dataset item and object_name.
-	 *
-	 *     o->under_object: (which is actually the native H5D_t *)
-	 *     o->under_vol_id: (This is the pass_through vol id which was passed
-	 *                      into the dataset_create and copied here)
-	 */
-
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)dset;
-	H5VL_subfiling_dset_t *subfiling_dset = NULL;
-	H5VL_subfiling_file_t *subfiling_file = NULL;
-	H5S_sel_type sel_type;
-	H5D_layout_t layout_method;
-	uint64_t h5_file_id;
-	size_t type_extent = 1;
-	int is_simple, simple_n_dims;
-    int ndims, nblocks, my_rank;
-    hid_t real_file_space_id;
-    hid_t real_mem_space_id;
-    hssize_t num_elem_file = -1, num_elem_mem = -1;
-	haddr_t file_offset;
+    H5D_layout_t layout_method = H5D_LAYOUT_ERROR;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)dset;
     herr_t ret_value;
 
-	hssize_t n_blocks;
-	/* For regular hyperslabs */
-	haddr_t start[H5S_MAX_RANK];
-	hsize_t stride[H5S_MAX_RANK];
-	hsize_t count[H5S_MAX_RANK];
-	hsize_t blocklen[H5S_MAX_RANK];
-	void   *addrs[H5S_MAX_RANK];
-
-	assert(dset);
-	subfiling_dset = o->obj.item.file;
-	assert(subfiling_dset);
-	subfiling_file = subfiling_dset->obj.item.file;
-	assert(subfiling_file);
-
-	h5_file_id = (uint64_t)subfiling_file->h5_file_id;
-
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Write\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Write\n");
 #endif
-
-	type_extent = H5Tget_size(mem_type_id);
-
-	if((layout_method = H5Pget_layout(subfiling_dset->dcpl_id)) < 0)
-		puts("can't get layout property");
-
-	if (layout_method == H5D_CONTIGUOUS) {
-		// ret_value = sf_write_vector(h5_file_id, vlen, start, blocklen, addrs);
-		ret_value = H5FD__dataset_write_contiguous(h5_file_id, subfiling_dset->f_offset, type_extent,
-							   subfiling_file->my_rank, subfiling_file->num_procs, o->under_object,
-							   mem_type_id, mem_space_id, file_space_id, plist_id, buf);
+    assert((o != NULL));
+	if (enable_vol_passthru) {
+        ret_value = H5VLdataset_write(o->under_object, o->under_vol_id,
+									  mem_type_id, mem_space_id, file_space_id,
+									  plist_id, buf, req);
 	}
 	else {
-		ret_value = H5VLdataset_write(o->under_object, o->under_vol_id, 
-				    mem_type_id, mem_space_id, file_space_id, plist_id, buf, req);
+		uint64_t h5_file_id;
+		size_t type_extent = 1;
+
+		type_extent = H5Tget_size(mem_type_id);
+
+		if((layout_method = H5Pget_layout(o->dcpl_id)) < 0)
+			puts("can't get layout property");
+
+		h5_file_id = o->h5_file_id;    
+
+		if (layout_method == H5D_CONTIGUOUS) {
+			// printf("type_extent = %ld - ", type_extent);
+			// puts("layout_method = H5D_CONTIGUOUS");
+			ret_value = H5FD__dataset_write_contiguous(h5_file_id, o->f_offset, type_extent,
+												   mpi_rank, mpi_size, o->under_object,
+												   mem_type_id, mem_space_id,
+												   file_space_id, plist_id, buf);
+		}
 	}
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_dataset_write() */
@@ -1537,14 +1410,14 @@ H5VL_subfiling_dataset_get(void *dset, H5VL_dataset_get_t get_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Get\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Get\n");
 #endif
 
     ret_value = H5VLdataset_get(o->under_object, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_dataset_get() */
@@ -1564,12 +1437,12 @@ static herr_t
 H5VL_subfiling_dataset_specific(void *obj, H5VL_dataset_specific_t specific_type,
     hid_t dxpl_id, void **req, va_list arguments)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)obj;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)obj;
     hid_t under_vol_id;
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL H5Dspecific\n");
+    printf("------- EXT PASS THROUGH VOL H5Dspecific\n");
 #endif
 
     // Save copy of underlying VOL connector ID and prov helper, in case of
@@ -1580,7 +1453,7 @@ H5VL_subfiling_dataset_specific(void *obj, H5VL_dataset_specific_t specific_type
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_dataset_specific() */
@@ -1604,14 +1477,14 @@ H5VL_subfiling_dataset_optional(void *obj, H5VL_dataset_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Optional\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Optional\n");
 #endif
 
     ret_value = H5VLdataset_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_dataset_optional() */
@@ -1630,28 +1503,23 @@ H5VL_subfiling_dataset_optional(void *obj, H5VL_dataset_optional_t opt_type,
 static herr_t
 H5VL_subfiling_dataset_close(void *dset, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)dset;
-	H5VL_subfiling_dset_t *subfiling_dset = NULL;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)dset;
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATASET Close\n");
+    printf("------- EXT PASS THROUGH VOL DATASET Close\n");
 #endif
-	assert(dset);
-	subfiling_dset = o->obj.item.file;
 
     ret_value = H5VLdataset_close(o->under_object, o->under_vol_id, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     /* Release our wrapper, if underlying dataset was closed */
-    if(ret_value >= 0) {
-		if (subfiling_dset)
-			free(subfiling_dset);
-        H5VL_subfiling_free_obj(o);
-	}
+    if(ret_value >= 0)
+        H5VL_subfiling_free_obj((H5VL_subfiling_t *)o);
+
     return ret_value;
 } /* end H5VL_subfiling_dataset_close() */
 
@@ -1676,16 +1544,16 @@ H5VL_subfiling_datatype_commit(void *obj, const H5VL_loc_params_t *loc_params,
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Commit\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Commit\n");
 #endif
 
     under = H5VLdatatype_commit(o->under_object, loc_params, o->under_vol_id, name, type_id, lcpl_id, tcpl_id, tapl_id, dxpl_id, req);
     if(under) {
-        dt = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        dt = H5VL__subfiling_new_obj(under, o->under_vol_id);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         dt = NULL;
@@ -1713,16 +1581,16 @@ H5VL_subfiling_datatype_open(void *obj, const H5VL_loc_params_t *loc_params,
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Open\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Open\n");
 #endif
 
     under = H5VLdatatype_open(o->under_object, loc_params, o->under_vol_id, name, tapl_id, dxpl_id, req);
     if(under) {
-        dt = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        dt = H5VL__subfiling_new_obj(under, o->under_vol_id);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         dt = NULL;
@@ -1749,14 +1617,14 @@ H5VL_subfiling_datatype_get(void *dt, H5VL_datatype_get_t get_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Get\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Get\n");
 #endif
 
     ret_value = H5VLdatatype_get(o->under_object, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_datatype_get() */
@@ -1781,7 +1649,7 @@ H5VL_subfiling_datatype_specific(void *obj, H5VL_datatype_specific_t specific_ty
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Specific\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Specific\n");
 #endif
 
     // Save copy of underlying VOL connector ID and prov helper, in case of
@@ -1792,7 +1660,7 @@ H5VL_subfiling_datatype_specific(void *obj, H5VL_datatype_specific_t specific_ty
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_datatype_specific() */
@@ -1816,14 +1684,14 @@ H5VL_subfiling_datatype_optional(void *obj, H5VL_datatype_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Optional\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Optional\n");
 #endif
 
     ret_value = H5VLdatatype_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_datatype_optional() */
@@ -1846,7 +1714,7 @@ H5VL_subfiling_datatype_close(void *dt, hid_t dxpl_id, void **req)
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL DATATYPE Close\n");
+    printf("------- EXT PASS THROUGH VOL DATATYPE Close\n");
 #endif
 
     assert(o->under_object);
@@ -1855,7 +1723,7 @@ H5VL_subfiling_datatype_close(void *dt, hid_t dxpl_id, void **req)
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     /* Release our wrapper, if underlying datatype was closed */
     if(ret_value >= 0)
@@ -1880,19 +1748,14 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     hid_t fapl_id, hid_t dxpl_id, void **req)
 {
     H5VL_subfiling_info_t *info;
-    H5VL_subfiling_t *file;
-	H5VL_subfiling_file_t *subfiling_file;
-	int errors = 0;
-    hid_t under_fapl_id = -1;
-	void *ret_value = NULL;
-    void *under = NULL;
+    H5VL_subfiling_object_t *file;
+    hid_t under_fapl_id;
+    void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL FILE Create\n");
+    printf("------- EXT PASS THROUGH VOL FILE Create\n");
 #endif
-	double t_start = 0.0, t_end = 0.0;
 
-	t_start = MPI_Wtime();
     /* Get copy of our VOL info from FAPL */
     H5Pget_vol_info(fapl_id, (void **)&info);
 
@@ -1909,93 +1772,48 @@ H5VL_subfiling_file_create(const char *name, unsigned flags, hid_t fcpl_id,
     /* Open the file with the underlying VOL connector */
     under = H5VLfile_create(name, flags, fcpl_id, under_fapl_id, dxpl_id, req);
     if(under) {
-		int mpi_enabled = 0;
-		int open_flags = O_RDWR;
-		uint64_t h5_file_id = (uint64_t)0;
+        file = H5VL__subfiling_new_object(under, info->under_vol_id);
+        if (!enable_vol_passthru) {
+            int open_flags = O_RDWR;
+            uint64_t h5_file_id = (uint64_t)0;
 
-		/* We can't use the HDF5 file flags directly, these
-		 * need to be translated into posix versions
-		 * for the subfiling.
-		 */
-		if (flags & H5F_ACC_TRUNC) open_flags |= O_TRUNC;
-		if (flags & H5F_ACC_CREAT) open_flags |= O_CREAT;
+            if (flags & H5F_ACC_TRUNC) open_flags |= O_TRUNC;
+            if (flags & H5F_ACC_CREAT) open_flags |= O_CREAT;
 
-        file = H5VL_subfiling_new_obj(under, info->under_vol_id);
-		if(NULL == (subfiling_file = (H5VL_subfiling_file_t *)malloc(sizeof(H5VL_subfiling_file_t)))) {
-			perror("malloc");
-			fprintf(stderr, "can't allocate Subfiling file struct");
-			ret_value = file;
-			errors++;
-			goto done;
-		}
-		memset(subfiling_file, 0, sizeof(H5VL_subfiling_file_t));
-		file->obj.item.type = H5I_FILE;
-		file->obj.item.file = subfiling_file;
-		subfiling_file->info = info;
+
+            if (mpi_size > 0) {
+                if (mpi_rank == 0) {
+                    if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
+                        puts("Failed to read the hdf5 file inode info");
+                    }
+                }
+                MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+            }
+            if (file) {
+                char *file_dir = H5F_get_extpath(under);
+                file->h5_file_id = h5_file_id;
+                file->name = strdup(name);
+                if (sf_open_subfiles(h5_file_id, file->name, file_dir , open_flags) < 0) {
+                    puts("Failed to open subfiles");
+                    free(file->name);
+                    free(file);
+                    file = NULL;
+                }
+            }
+        }
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, info->under_vol_id);
-
-		if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-            if (mpi_enabled) {
-				MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
-				MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
-				if (subfiling_file->my_rank == 0) {
-					if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
-						errors++;
-						goto done;
-					}
-				}
-				
-				if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS) {
-					errors++;
-					goto done;
-				}
-			}
-			else {
-				puts("MPI not initialized!");
-				errors++;
-				goto done;
-			}
-		}
-
-		if (file != NULL) {
-			char *file_dir = H5F_get_extpath(under);
-			if (sf_open_subfiles(h5_file_id, name, file_dir , open_flags) < 0) {
-				errors++;
-            }
-			else {
-				subfiling_file->h5_file_id = h5_file_id;
-				subfiling_file->file_name = strdup(name);
-			}
-		}
+            *req = H5VL__subfiling_new_object(*req, info->under_vol_id);
     } /* end if */
     else
         file = NULL;
-
-
-done:
-	t_end = MPI_Wtime();
-	if (subfiling_file->my_rank == 0) {
-		printf("%s: HDF5 File_open + Subfiling_open completed in %lf seconds\n", __func__, (t_end - t_start));
-		fflush(stdout);
-	}
-	if (errors) {
-		if (file) free(file);
-		file = NULL;
-		if (subfiling_file) free(subfiling_file);
-	}
-
-	ret_value = (void *)file;
-	if (file == NULL) 
 
     /* Close underlying FAPL */
     H5Pclose(under_fapl_id);
 
     /* Release copy of our VOL info */
-	if (info)
-        H5VL_subfiling_info_free(info);
+    H5VL_subfiling_info_free(info);
 
     return (void *)file;
 } /* end H5VL_subfiling_file_create() */
@@ -2016,16 +1834,14 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     hid_t dxpl_id, void **req)
 {
     H5VL_subfiling_info_t *info;
-    H5VL_subfiling_file_t *subfiling_file;
-	H5VL_subfiling_t *file;
-	int errors = 0;
-    hid_t under_fapl_id = -1;
-	void *ret_value = NULL;
-    void *under = NULL;
-	
+    H5VL_subfiling_object_t *file;
+    hid_t under_fapl_id;
+    void *under;
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL FILE Open\n");
+    printf("------- EXT PASS THROUGH VOL FILE Open\n");
 #endif
+	printf("[%s %d] %s\n", __func__, mpi_rank, name);
+	fflush(stdout);
 
     /* Get copy of our VOL info from FAPL */
     H5Pget_vol_info(fapl_id, (void **)&info);
@@ -2043,89 +1859,50 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
     /* Open the file with the underlying VOL connector */
     under = H5VLfile_open(name, flags, under_fapl_id, dxpl_id, req);
     if(under) {
-		int mpi_enabled = 0;
-		int open_flags = O_RDWR;
-		uint64_t h5_file_id = (uint64_t)-1;
+        file = H5VL__subfiling_new_object(under, info->under_vol_id);
+        if (!enable_vol_passthru) {
+            int open_flags = O_RDWR;
+            uint64_t h5_file_id = (uint64_t)0;
 
-		/* We can't use the HDF5 file flags directly, these
-		 * need to be translated into posix versions
-		 * for the subfiling.
-		 */
-		if (flags & H5F_ACC_TRUNC) open_flags |= O_TRUNC;
-		if (flags & H5F_ACC_CREAT) open_flags |= O_CREAT;
-		
-        file = H5VL_subfiling_new_obj(under, info->under_vol_id);
-		if(NULL == (subfiling_file = (H5VL_subfiling_file_t *)malloc(sizeof(H5VL_subfiling_file_t)))) {
-			perror("malloc");
-			fprintf(stderr, "can't allocate Subfiling file struct");
-			ret_value = file;
-			errors++;
-			goto done;
-		}
-		memset(subfiling_file, 0, sizeof(H5VL_subfiling_file_t));
-		file->obj.item.type = H5I_FILE;
-		file->obj.item.file = subfiling_file;
+            if (flags & H5F_ACC_TRUNC) open_flags |= O_TRUNC;
+            if (flags & H5F_ACC_CREAT) open_flags |= O_CREAT;
+
+            if (mpi_size > 0) {
+                if (mpi_rank == 0) {
+                    if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
+                        puts("Failed to read the hdf5 file inode info");
+                    }
+                }
+                MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+            }
+            if (file) {
+                char *file_dir = H5F_get_extpath(under);
+                file->h5_file_id = h5_file_id;
+                file->name = strdup(name);
+                if (sf_open_subfiles(h5_file_id, file->name, file_dir , open_flags) < 0) {
+                    puts("Failed to open subfiles");
+                    free(file->name);
+                    free(file);
+                    file = NULL;
+                }
+            }
+        }
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, info->under_vol_id);
-        
-		if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-			if (mpi_enabled) {
-				MPI_Comm_size(MPI_COMM_WORLD, &subfiling_file->num_procs);
-				MPI_Comm_rank(MPI_COMM_WORLD, &subfiling_file->my_rank);
-				if (subfiling_file->my_rank == 0) {
-					if (H5FD__get_file_ino(name, &h5_file_id) < 0) {
-						errors++;
-						goto done;
-					}
-				}
-				if (MPI_Bcast(&h5_file_id, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD) != MPI_SUCCESS) {
-                    errors++;
-					goto done;
-				}
-			}
-			else {
-				puts("MPI not initialized!");
-				errors++;
-				goto done;
-			}
-		}
-
-		if (file != NULL) {	
-			char *file_dir = H5F_get_extpath(under);
-			/* Only open subfiling if we've enabled MPI */
-			if (sf_open_subfiles(h5_file_id, name, file_dir, open_flags) < 0) {
-				errors++;
-            }
-			else {
-				subfiling_file->h5_file_id = h5_file_id;
-				subfiling_file->file_name = strdup(name);
-			}
-		}
-		
+            *req = H5VL__subfiling_new_object(*req, info->under_vol_id);
     } /* end if */
     else
         file = NULL;
-
-done:
-	if (errors) {
-		if (file) free(file);
-		file = NULL;
-		if (subfiling_file) free(subfiling_file);
-	}
-
-	ret_value = (void *)file;
 
     /* Close underlying FAPL */
     H5Pclose(under_fapl_id);
 
     /* Release copy of our VOL info */
-	if (info)
-        H5VL_subfiling_info_free(info);
+    H5VL_subfiling_info_free(info);
 
-    return (void *)ret_value;
-
+    return (void *)file;
 } /* end H5VL_subfiling_file_open() */
+
 
 /*-------------------------------------------------------------------------
  * Function:    H5VL_subfiling_file_get
@@ -2145,14 +1922,14 @@ H5VL_subfiling_file_get(void *file, H5VL_file_get_t get_type, hid_t dxpl_id,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL FILE Get\n");
+    printf("------- EXT PASS THROUGH VOL FILE Get\n");
 #endif
 
     ret_value = H5VLfile_get(o->under_object, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_file_get() */
@@ -2203,7 +1980,7 @@ H5VL_subfiling_file_specific(void *file, H5VL_file_specific_t specific_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL FILE Specific\n");
+    printf("------- EXT PASS THROUGH VOL FILE Specific\n");
 #endif
 
     /* Unpack arguments to get at the child file pointer when mounting a file */
@@ -2279,7 +2056,7 @@ H5VL_subfiling_file_specific(void *file, H5VL_file_specific_t specific_type,
                 void      **ret = va_arg(my_arguments, void **);
 
                 if(ret && *ret)
-                    *ret = H5VL_subfiling_new_obj(*ret, o->under_vol_id);
+                    *ret = H5VL__subfiling_new_obj(*ret, o->under_vol_id);
             } /* end if */
 
             /* Finish use of copied vararg list */
@@ -2289,7 +2066,7 @@ H5VL_subfiling_file_specific(void *file, H5VL_file_specific_t specific_type,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_file_specific() */
@@ -2313,14 +2090,14 @@ H5VL_subfiling_file_optional(void *file, H5VL_file_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL File Optional\n");
+    printf("------- EXT PASS THROUGH VOL File Optional\n");
 #endif
 
     ret_value = H5VLfile_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_file_optional() */
@@ -2337,66 +2114,51 @@ H5VL_subfiling_file_optional(void *file, H5VL_file_optional_t opt_type,
  *-------------------------------------------------------------------------
  */
 static herr_t
-H5VL_subfiling_file_close(void *_file, hid_t dxpl_id, void **req)
+H5VL_subfiling_file_close(void *file, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)_file;
-    H5VL_subfiling_file_t *subfiling_file = (H5VL_subfiling_file_t *)o->obj.item.file;
-    int mpi_enabled = 0;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)file;
     herr_t ret_value;
+	uint64_t h5_file_id = 0;
 	double t_start = 0.0, t_end = 0.0;
 	double t_substart = 0.0, t_subend = 0.0;
-	t_start = MPI_Wtime();
-	if (file_create_count > 0) {
-		if (file_create_count != file_close_count)
-			puts("mismatched file_create_count and file_close_count");
-		file_create_count = 0;
-	}
-	if (file_open_count > 0) {
-		if (file_open_count != file_close_count)
-			puts("mismatched file_open_count and file_close_count");
-		file_open_count = 0;
-	}
+    assert((o != NULL));
 
-	file_close_count = 0;
+	t_start = MPI_Wtime();
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL FILE Close\n");
+    printf("------- EXT PASS THROUGH VOL FILE Close\n");
 #endif
-	assert(subfiling_file != NULL);
-    ret_value = H5VLfile_close(o->under_object, o->under_vol_id, dxpl_id, req);
 
-    if (MPI_Initialized(&mpi_enabled) == MPI_SUCCESS) {
-		if (mpi_enabled) {
-			uint64_t h5_file_id = (uint64_t)subfiling_file->h5_file_id;
+    h5_file_id = (uint64_t)o->h5_file_id;
+    ret_value = H5VLfile_close(o->under_object, o->under_vol_id, dxpl_id, req);
+    if (!enable_vol_passthru) {
+		if (sf_shutdown_local_ioc(h5_file_id) != 0) {
+			printf("Warning: Internal error returned by sf_shutdown_local_ioc()\n");
+		}
+		if (mpi_size > 0) {
 			t_substart = MPI_Wtime();
-			if ((sf_close_subfiles(h5_file_id) < 0)) {
-				printf("Unable to close subfiles\n");
-				ret_value = -1;
-			}
+			if ((sf_close_subfiles(h5_file_id) < 0))
+				puts("Unable to close subfiles");
+
 			t_subend = MPI_Wtime();
 			t_end = t_subend;
-			if (subfiling_file->my_rank == 0) {
+			if (mpi_rank == 0) {
 				printf("%s: subfile_close completed in %lf and HDF5 file close in %lf seconds\n",
 					   __func__, (t_subend - t_substart),(t_end - t_start));
 				fflush(stdout);
 			}
-		}
-		else {
-			if (subfiling_file->file_name)
-				free(subfiling_file->file_name);
-			free(subfiling_file);
+
+			free(o->name);
 		}
 	}
-	
+
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     /* Release our wrapper, if underlying file was closed */
     if(ret_value >= 0)
-        H5VL_subfiling_free_obj(o);
-
-
+        H5VL_subfiling_free_obj((H5VL_subfiling_t *)o);
 
     return ret_value;
 } /* end H5VL_subfiling_file_close() */
@@ -2417,21 +2179,26 @@ H5VL_subfiling_group_create(void *obj, const H5VL_loc_params_t *loc_params,
     const char *name, hid_t lcpl_id, hid_t gcpl_id, hid_t gapl_id,
     hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *group;
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)obj;
+    H5VL_subfiling_object_t *group;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)obj;
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL GROUP Create\n");
+    printf("------- EXT PASS THROUGH VOL GROUP Create\n");
 #endif
 
     under = H5VLgroup_create(o->under_object, loc_params, o->under_vol_id, name, lcpl_id, gcpl_id,  gapl_id, dxpl_id, req);
     if(under) {
-        group = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        group = H5VL__subfiling_new_object(under, o->under_vol_id);
+		assert((group != NULL));
 
+		group->h5_file_id = o->h5_file_id;
+		group->name = strdup(name);
+        if (mpi_rank == 0)
+			printf("%s file_id = %lu\n", __func__,group->h5_file_id);
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         group = NULL;
@@ -2454,21 +2221,25 @@ static void *
 H5VL_subfiling_group_open(void *obj, const H5VL_loc_params_t *loc_params,
     const char *name, hid_t gapl_id, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *group;
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)obj;
+    H5VL_subfiling_object_t *group;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)obj;
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL GROUP Open\n");
+    printf("------- EXT PASS THROUGH VOL GROUP Open\n");
 #endif
 
     under = H5VLgroup_open(o->under_object, loc_params, o->under_vol_id, name, gapl_id, dxpl_id, req);
     if(under) {
-        group = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        group = H5VL__subfiling_new_object(under, o->under_vol_id);
+        assert((group != NULL));
+
+		group->h5_file_id = o->h5_file_id;
+		group->name = strdup(name);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         group = NULL;
@@ -2495,14 +2266,14 @@ H5VL_subfiling_group_get(void *obj, H5VL_group_get_t get_type, hid_t dxpl_id,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL GROUP Get\n");
+    printf("------- EXT PASS THROUGH VOL GROUP Get\n");
 #endif
 
     ret_value = H5VLgroup_get(o->under_object, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_group_get() */
@@ -2527,7 +2298,7 @@ H5VL_subfiling_group_specific(void *obj, H5VL_group_specific_t specific_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL GROUP Specific\n");
+    printf("------- EXT PASS THROUGH VOL GROUP Specific\n");
 #endif
 
     // Save copy of underlying VOL connector ID and prov helper, in case of
@@ -2538,7 +2309,7 @@ H5VL_subfiling_group_specific(void *obj, H5VL_group_specific_t specific_type,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_group_specific() */
@@ -2562,14 +2333,14 @@ H5VL_subfiling_group_optional(void *obj, H5VL_group_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL GROUP Optional\n");
+    printf("------- EXT PASS THROUGH VOL GROUP Optional\n");
 #endif
 
     ret_value = H5VLgroup_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_group_optional() */
@@ -2588,23 +2359,25 @@ H5VL_subfiling_group_optional(void *obj, H5VL_group_optional_t opt_type,
 static herr_t
 H5VL_subfiling_group_close(void *grp, hid_t dxpl_id, void **req)
 {
-    H5VL_subfiling_t *o = (H5VL_subfiling_t *)grp;
+    H5VL_subfiling_object_t *o = (H5VL_subfiling_object_t *)grp;
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL H5Gclose\n");
+    printf("------- EXT PASS THROUGH VOL H5Gclose\n");
 #endif
 
     ret_value = H5VLgroup_close(o->under_object, o->under_vol_id, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     /* Release our wrapper, if underlying file was closed */
-    if(ret_value >= 0)
-        H5VL_subfiling_free_obj(o);
-
+    if(ret_value >= 0) {
+        if (o->name)
+			free(o->name);
+        H5VL_subfiling_free_obj((H5VL_subfiling_t *)o);
+	}
     return ret_value;
 } /* end H5VL_subfiling_group_close() */
 
@@ -2655,7 +2428,7 @@ H5VL_subfiling_link_create(H5VL_link_create_type_t create_type, void *obj,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Create\n");
+    printf("------- EXT PASS THROUGH VOL LINK Create\n");
 #endif
 
     /* Try to retrieve the "under" VOL id */
@@ -2689,7 +2462,7 @@ H5VL_subfiling_link_create(H5VL_link_create_type_t create_type, void *obj,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_create() */
@@ -2721,7 +2494,7 @@ H5VL_subfiling_link_copy(void *src_obj, const H5VL_loc_params_t *loc_params1,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Copy\n");
+    printf("------- EXT PASS THROUGH VOL LINK Copy\n");
 #endif
 
     /* Retrieve the "under" VOL id */
@@ -2735,7 +2508,7 @@ H5VL_subfiling_link_copy(void *src_obj, const H5VL_loc_params_t *loc_params1,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_copy() */
@@ -2767,7 +2540,7 @@ H5VL_subfiling_link_move(void *src_obj, const H5VL_loc_params_t *loc_params1,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Move\n");
+    printf("------- EXT PASS THROUGH VOL LINK Move\n");
 #endif
 
     /* Retrieve the "under" VOL id */
@@ -2781,7 +2554,7 @@ H5VL_subfiling_link_move(void *src_obj, const H5VL_loc_params_t *loc_params1,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_move() */
@@ -2805,14 +2578,14 @@ H5VL_subfiling_link_get(void *obj, const H5VL_loc_params_t *loc_params,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Get\n");
+    printf("------- EXT PASS THROUGH VOL LINK Get\n");
 #endif
 
     ret_value = H5VLlink_get(o->under_object, loc_params, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_get() */
@@ -2836,14 +2609,14 @@ H5VL_subfiling_link_specific(void *obj, const H5VL_loc_params_t *loc_params,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Specific\n");
+    printf("------- EXT PASS THROUGH VOL LINK Specific\n");
 #endif
 
     ret_value = H5VLlink_specific(o->under_object, loc_params, o->under_vol_id, specific_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_specific() */
@@ -2867,14 +2640,14 @@ H5VL_subfiling_link_optional(void *obj, H5VL_link_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL LINK Optional\n");
+    printf("------- EXT PASS THROUGH VOL LINK Optional\n");
 #endif
 
     ret_value = H5VLlink_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_link_optional() */
@@ -2899,16 +2672,16 @@ H5VL_subfiling_object_open(void *obj, const H5VL_loc_params_t *loc_params,
     void *under;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL OBJECT Open\n");
+    printf("------- EXT PASS THROUGH VOL OBJECT Open\n");
 #endif
 
     under = H5VLobject_open(o->under_object, loc_params, o->under_vol_id, opened_type, dxpl_id, req);
     if(under) {
-        new_obj = H5VL_subfiling_new_obj(under, o->under_vol_id);
+        new_obj = H5VL__subfiling_new_obj(under, o->under_vol_id);
 
         /* Check for async request */
         if(req && *req)
-            *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+            *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
     } /* end if */
     else
         new_obj = NULL;
@@ -2938,14 +2711,14 @@ H5VL_subfiling_object_copy(void *src_obj, const H5VL_loc_params_t *src_loc_param
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL OBJECT Copy\n");
+    printf("------- EXT PASS THROUGH VOL OBJECT Copy\n");
 #endif
 
     ret_value = H5VLobject_copy(o_src->under_object, src_loc_params, src_name, o_dst->under_object, dst_loc_params, dst_name, o_src->under_vol_id, ocpypl_id, lcpl_id, dxpl_id, req);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o_src->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o_src->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_object_copy() */
@@ -2968,14 +2741,14 @@ H5VL_subfiling_object_get(void *obj, const H5VL_loc_params_t *loc_params, H5VL_o
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL OBJECT Get\n");
+    printf("------- EXT PASS THROUGH VOL OBJECT Get\n");
 #endif
 
     ret_value = H5VLobject_get(o->under_object, loc_params, o->under_vol_id, get_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_object_get() */
@@ -3001,7 +2774,7 @@ H5VL_subfiling_object_specific(void *obj, const H5VL_loc_params_t *loc_params,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL OBJECT Specific\n");
+    printf("------- EXT PASS THROUGH VOL OBJECT Specific\n");
 #endif
 
     // Save copy of underlying VOL connector ID and prov helper, in case of
@@ -3012,7 +2785,7 @@ H5VL_subfiling_object_specific(void *obj, const H5VL_loc_params_t *loc_params,
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_object_specific() */
@@ -3036,14 +2809,14 @@ H5VL_subfiling_object_optional(void *obj, H5VL_object_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL OBJECT Optional\n");
+    printf("------- EXT PASS THROUGH VOL OBJECT Optional\n");
 #endif
 
     ret_value = H5VLobject_optional(o->under_object, o->under_vol_id, opt_type, dxpl_id, req, arguments);
 
     /* Check for async request */
     if(req && *req)
-        *req = H5VL_subfiling_new_obj(*req, o->under_vol_id);
+        *req = H5VL__subfiling_new_obj(*req, o->under_vol_id);
 
     return ret_value;
 } /* end H5VL_subfiling_object_optional() */
@@ -3066,7 +2839,7 @@ H5VL_subfiling_introspect_get_conn_cls(void *obj, H5VL_get_conn_lvl_t lvl,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INTROSPECT GetConnCls\n");
+    printf("------- EXT PASS THROUGH VOL INTROSPECT GetConnCls\n");
 #endif
 
     /* Check for querying this connector's class */
@@ -3099,7 +2872,7 @@ H5VL_subfiling_introspect_opt_query(void *obj, H5VL_subclass_t cls,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL INTROSPECT OptQuery\n");
+    printf("------- EXT PASS THROUGH VOL INTROSPECT OptQuery\n");
 #endif
 
     ret_value = H5VLintrospect_opt_query(o->under_object, o->under_vol_id, cls,
@@ -3130,7 +2903,7 @@ H5VL_subfiling_request_wait(void *obj, uint64_t timeout,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Wait\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Wait\n");
 #endif
 
     ret_value = H5VLrequest_wait(o->under_object, o->under_vol_id, timeout, status);
@@ -3162,7 +2935,7 @@ H5VL_subfiling_request_notify(void *obj, H5VL_request_notify_t cb, void *ctx)
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Notify\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Notify\n");
 #endif
 
     ret_value = H5VLrequest_notify(o->under_object, o->under_vol_id, cb, ctx);
@@ -3193,7 +2966,7 @@ H5VL_subfiling_request_cancel(void *obj)
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Cancel\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Cancel\n");
 #endif
 
     ret_value = H5VLrequest_cancel(o->under_object, o->under_vol_id);
@@ -3248,7 +3021,7 @@ H5VL_subfiling_request_specific(void *obj, H5VL_request_specific_t specific_type
     herr_t ret_value = -1;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Specific\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Specific\n");
 #endif
 
     if(H5VL_REQUEST_WAITANY == specific_type ||
@@ -3393,7 +3166,7 @@ H5VL_subfiling_request_optional(void *obj, H5VL_request_optional_t opt_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Optional\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Optional\n");
 #endif
 
     ret_value = H5VLrequest_optional(o->under_object, o->under_vol_id, opt_type, arguments);
@@ -3420,7 +3193,7 @@ H5VL_subfiling_request_free(void *obj)
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL REQUEST Free\n");
+    printf("------- EXT PASS THROUGH VOL REQUEST Free\n");
 #endif
 
     ret_value = H5VLrequest_free(o->under_object, o->under_vol_id);
@@ -3449,7 +3222,7 @@ H5VL_subfiling_blob_put(void *obj, const void *buf, size_t size,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL BLOB Put\n");
+    printf("------- EXT PASS THROUGH VOL BLOB Put\n");
 #endif
 
     ret_value = H5VLblob_put(o->under_object, o->under_vol_id, buf, size,
@@ -3476,7 +3249,7 @@ H5VL_subfiling_blob_get(void *obj, const void *blob_id, void *buf,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL BLOB Get\n");
+    printf("------- EXT PASS THROUGH VOL BLOB Get\n");
 #endif
 
     ret_value = H5VLblob_get(o->under_object, o->under_vol_id, blob_id, buf,
@@ -3503,7 +3276,7 @@ H5VL_subfiling_blob_specific(void *obj, void *blob_id,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL BLOB Specific\n");
+    printf("------- EXT PASS THROUGH VOL BLOB Specific\n");
 #endif
 
     ret_value = H5VLblob_specific(o->under_object, o->under_vol_id, blob_id,
@@ -3530,7 +3303,7 @@ H5VL_subfiling_blob_optional(void *obj, void *blob_id,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL BLOB Optional\n");
+    printf("------- EXT PASS THROUGH VOL BLOB Optional\n");
 #endif
 
     ret_value = H5VLblob_optional(o->under_object, o->under_vol_id, blob_id,
@@ -3559,7 +3332,7 @@ H5VL_subfiling_token_cmp(void *obj, const H5O_token_t *token1,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL TOKEN Compare\n");
+    printf("------- EXT PASS THROUGH VOL TOKEN Compare\n");
 #endif
 
     /* Sanity checks */
@@ -3592,7 +3365,7 @@ H5VL_subfiling_token_to_str(void *obj, H5I_type_t obj_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL TOKEN To string\n");
+    printf("------- EXT PASS THROUGH VOL TOKEN To string\n");
 #endif
 
     /* Sanity checks */
@@ -3624,7 +3397,7 @@ H5VL_subfiling_token_from_str(void *obj, H5I_type_t obj_type,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL TOKEN From string\n");
+    printf("------- EXT PASS THROUGH VOL TOKEN From string\n");
 #endif
 
     /* Sanity checks */
@@ -3655,7 +3428,7 @@ H5VL_subfiling_optional(void *obj, int op_type, hid_t dxpl_id, void **req,
     herr_t ret_value;
 
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
-    printf("------- SUBFILING VOL generic Optional\n");
+    printf("------- EXT PASS THROUGH VOL generic Optional\n");
 #endif
 
     ret_value = H5VLoptional(o->under_object, o->under_vol_id, op_type,
@@ -3664,3 +3437,26 @@ H5VL_subfiling_optional(void *obj, int op_type, hid_t dxpl_id, void **req,
     return ret_value;
 } /* end H5VL_subfiling_optional() */
 
+static herr_t
+dataset_get_offset_helper(H5VL_subfiling_object_t *dset, ...)
+{
+    herr_t ret_value;
+	va_list ap;
+	va_start(ap, dset);
+	if ((ret_value = H5VL_subfiling_dataset_optional(dset, H5VL_NATIVE_DATASET_GET_OFFSET, 0, NULL, ap)) < 0)
+		puts("unable to get file_offset");
+	va_end(ap);
+	return ret_value;
+}
+
+static herr_t
+dataset_get_dcpl_helper(H5VL_subfiling_object_t *dset, ...)
+{
+	herr_t ret_value;
+	va_list ap;
+	va_start(ap, dset);
+	if ((ret_value = H5VL_subfiling_dataset_get(dset, H5VL_DATASET_GET_DCPL, 0, NULL, ap)) < 0)
+		puts("unable to get dataset dcpl");
+	va_end(ap);
+	return ret_value;	
+}

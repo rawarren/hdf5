@@ -23,6 +23,10 @@ static int sf_write_ops = 0;
 static double sf_pwrite_time = 0.0;
 static double sf_write_wait_time = 0.0;
 
+static int sf_read_ops = 0;
+static double sf_pread_time = 0.0;
+static double sf_read_wait_time = 0.0;
+
 static int *request_count_per_rank = NULL;
 
 atomic_int sf_workinprogress = 0;
@@ -30,6 +34,7 @@ atomic_int sf_work_pending = 0;
 atomic_int sf_file_close_count = 0;
 atomic_int sf_file_refcount = 0;
 atomic_int sf_ioc_fini_refcount = 0;
+atomic_int sf_ioc_ready = 0;
 
 #ifndef NDEBUG
 FILE *sf_logfile = NULL;
@@ -46,6 +51,17 @@ int sf_shutdown_flag = 0;
 Private functions
 =========================================
 */
+
+static int
+get_ioc_work_pending(subfiling_context_t *sf_context)
+{
+    int ioc_busy = atomic_load(&sf_work_pending);
+    int any_busy = ioc_busy;
+    if (sf_context->topology->n_io_concentrators > 1) {
+        MPI_Reduce(&ioc_busy, &any_busy, 1, MPI_INT, MPI_SUM, 0, sf_context->sf_group_comm);
+    }
+    return any_busy;
+}
 
 /*
  * ---------------------------------------------------
@@ -249,7 +265,7 @@ H5FD__determine_ioc_count(int world_size, int world_rank,
 
     if (!ioc_count || (ioc_selection != ioc_select_method)) {
         int     k, node;
-	int     rank_multiple = 0;
+    int     rank_multiple = 0;
         int     node_index;
         int     iocs_per_node = 1;
         char *  envValue = NULL;
@@ -269,84 +285,84 @@ H5FD__determine_ioc_count(int world_size, int world_rank,
         assert(io_concentrator != NULL);
         app_topology->selection_type = ioc_selection = ioc_select_method;
 
-	if (ioc_select_method == SELECT_IOC_WITH_CONFIG) {
-		puts("SELECT_IOC_WITH_CONFIG: not supported yet...");
-		ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-		goto next;
-	}
-	if (ioc_select_method == SELECT_IOC_TOTAL) {
-		if (ioc_select_option) {
-			int checkValue = atoi(ioc_select_option);
-			if (checkValue == 0) {
-				ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-				goto next;
-			}
-		    if (checkValue > world_size)
-				checkValue = world_size;
+    if (ioc_select_method == SELECT_IOC_WITH_CONFIG) {
+        puts("SELECT_IOC_WITH_CONFIG: not supported yet...");
+        ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+        goto next;
+    }
+    if (ioc_select_method == SELECT_IOC_TOTAL) {
+        if (ioc_select_option) {
+            int checkValue = atoi(ioc_select_option);
+            if (checkValue == 0) {
+                ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+                goto next;
+            }
+            if (checkValue > world_size)
+                checkValue = world_size;
 
-			if (checkValue) {
-				ioc_count = checkValue;
-				rank_multiple = (world_size/checkValue);
-				/* Starts with a non-zero rank */
-				if (world_rank && ((world_rank % rank_multiple) == 0))
-					app_topology->rank_is_ioc = true;
-			} 
-			if (io_concentrator) {
-				int ioc_next;
-				int ioc_index;
-				for ( k=1, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
-					ioc_index = k * rank_multiple;
-					io_concentrator[ioc_next] = ioc_index;
-				}
+            if (checkValue) {
+                ioc_count = checkValue;
+                rank_multiple = (world_size/checkValue);
+                /* Starts with a non-zero rank */
+                if (world_rank && ((world_rank % rank_multiple) == 0))
+                    app_topology->rank_is_ioc = true;
+            } 
+            if (io_concentrator) {
+                int ioc_next;
+                int ioc_index;
+                for ( k=1, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
+                    ioc_index = k * rank_multiple;
+                    io_concentrator[ioc_next] = ioc_index;
+                }
 
-				assert(ioc_count == ioc_next);
-				app_topology->n_io_concentrators = ioc_count;
-			}
-			*thisapp = app_topology;
-		}
-		else {
-			puts("Missing option argument!");
-			ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-			goto next;
-		}
-	}
-	if (ioc_select_method == SELECT_IOC_EVERY_NTH_RANK) {
-		/* This is similar to the previous method (SELECT_IOC_TOTAL)
-		 * in that the user chooses a rank multiple rather than an
-		 * absolute number of IO Concentrators.  Unlike the former,
-		 * we always start our selection with rank zero (0) and
-		 * the apply the stride to identify other IOCs.
-		 */
-		if (ioc_select_option) {
-			int checkValue = atoi(ioc_select_option);
-			if (checkValue == 0) { /* Error */
-				ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-				goto next;
-			}
-			rank_multiple = checkValue;
-			ioc_count = (world_size / rank_multiple);
+                assert(ioc_count == ioc_next);
+                app_topology->n_io_concentrators = ioc_count;
+            }
+            *thisapp = app_topology;
+        }
+        else {
+            puts("Missing option argument!");
+            ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+            goto next;
+        }
+    }
+    if (ioc_select_method == SELECT_IOC_EVERY_NTH_RANK) {
+        /* This is similar to the previous method (SELECT_IOC_TOTAL)
+         * in that the user chooses a rank multiple rather than an
+         * absolute number of IO Concentrators.  Unlike the former,
+         * we always start our selection with rank zero (0) and
+         * the apply the stride to identify other IOCs.
+         */
+        if (ioc_select_option) {
+            int checkValue = atoi(ioc_select_option);
+            if (checkValue == 0) { /* Error */
+                ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+                goto next;
+            }
+            rank_multiple = checkValue;
+            ioc_count = (world_size / rank_multiple);
 
-			if ((world_rank % rank_multiple) == 0) {
-				app_topology->rank_is_ioc = true;
-			}
-			else ioc_count++;
-			if (io_concentrator) {
-				int ioc_next;
-				int ioc_index;
-				for ( k=0, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
-					ioc_index = k * rank_multiple;
-					io_concentrator[ioc_next] = ioc_index;
-				}
-				assert(ioc_count == ioc_next);
-				app_topology->n_io_concentrators = ioc_count;
-			}
-			*thisapp = app_topology;
-		}
-		else {
-			puts("Missing option argument!");
-			ioc_select_method = SELECT_IOC_ONE_PER_NODE;
-		}
-	}
+            if ((world_rank % rank_multiple) == 0) {
+                app_topology->rank_is_ioc = true;
+            }
+            else ioc_count++;
+            if (io_concentrator) {
+                int ioc_next;
+                int ioc_index;
+                for ( k=0, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
+                    ioc_index = k * rank_multiple;
+                    io_concentrator[ioc_next] = ioc_index;
+                }
+                assert(ioc_count == ioc_next);
+                app_topology->n_io_concentrators = ioc_count;
+            }
+            *thisapp = app_topology;
+        }
+        else {
+            puts("Missing option argument!");
+            ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+        }
+    }
 
 next:
 
@@ -420,129 +436,13 @@ next:
             }
         }
     } else {
-	/* Cached? */
+    /* Cached? */
         app_topology = (sf_topology_t *) get_subfiling_object(topology_id);
         *thisapp = app_topology;
     }
     return ioc_count;
 }
 
-#if 0
-int
-H5FD__determine_ioc_count(int world_size, int world_rank,
-    sf_ioc_selection_t ioc_select_method, char *ioc_select_option,
-    sf_topology_t **thisapp)
-{
-    static int              ioc_count = 0;
-    static int64_t          topology_id = 0;
-    static sf_ioc_selection_t ioc_selection = ioc_selection_options;
-    sf_topology_t *         app_topology = NULL;
-
-    assert(thisapp != NULL);
-
-    if (!ioc_count || (ioc_selection != ioc_select_method)) {
-        int     k, node;
-        int     node_index;
-        int     iocs_per_node = 1;
-        char *  envValue = NULL;
-        int *   io_concentrator = NULL;
-        int     index = (int) ioc_select_method;
-        int64_t tag = (int64_t) SF_TOPOLOGY;
-        topology_id = (int64_t)((tag << 32) | index);
-
-        app_topology = (sf_topology_t *) get_subfiling_object(topology_id);
-        assert(app_topology != NULL);
-        app_topology->world_size = world_size;
-        app_topology->world_rank = world_rank;
-        if (app_topology->io_concentrator == NULL) {
-            app_topology->io_concentrator = io_concentrator =
-                (int *) malloc(((size_t) world_size * sizeof(int)));
-        }
-        assert(io_concentrator != NULL);
-        app_topology->selection_type = ioc_selection = ioc_select_method;
-
-        if (ioc_select_method == SELECT_IOC_ONE_PER_NODE) {
-            ioc_count = count_nodes(app_topology);
-            /* FIXME: This should ONLY be used for testing!
-             * For production, we should probably limit the
-             * number to a single IOC per node...
-             * (based on performance numbers)
-             */
-            if ((envValue = getenv("IOC_COUNT_PER_NODE")) != NULL) {
-                int value_check = atoi(envValue);
-                if (value_check > 0) {
-                    iocs_per_node = value_check;
-                }
-            }
-
-            /* 'node_ranks' contain the index of the first instance of a hostid
-             *  in the sorted sf_topology array. Our own index is 'node_index'.
-             */
-            node_index = app_topology->node_index;
-            app_topology->local_peers =
-                app_topology->node_ranks[node_index + 1] -
-                app_topology->node_ranks[node_index];
-            if (app_topology->layout[node_index].rank == world_rank) {
-                app_topology->rank_is_ioc = true;
-                app_topology->subfile_rank = node_index;
-            }
-            /* FIXME: This should ONLY be used for testing!
-             * NOTE: The app_topology->local_peers is ONLY valid
-             * for the current NODE.  There is no guarantee that
-             * the application layout defines a uniform number of
-             * MPI ranks per node...
-             * Because this is only for testing purposes (at this time)
-             * we can live with the assumption that if we define the
-             * IOC_COUNT_PER_NODE environment variable, then each
-             * node will have *at-least* that many MPI ranks assigned.
-             * See above!
-             */
-            else if ((app_topology->local_peers > 1) && (iocs_per_node > 1)) {
-                if (iocs_per_node > app_topology->local_peers)
-                    iocs_per_node = app_topology->local_peers;
-                for (k = 1; k < iocs_per_node; k++) {
-                    if (app_topology->layout[node_index + k].rank ==
-                        world_rank) {
-                        app_topology->rank_is_ioc = true;
-                        app_topology->subfile_rank = node_index + k;
-                        break;
-                    }
-                }
-            }
-            /* More hacks for testing */
-            if (io_concentrator) {
-                int n_iocs = 0;
-                for (node = 0; node < ioc_count; node++) {
-                    for (k = 0; k < iocs_per_node; k++) {
-                        node_index = app_topology->node_ranks[node];
-                        io_concentrator[n_iocs++] =
-                            (int) (app_topology->layout[node_index + k].rank);
-                    }
-                }
-                ioc_count = n_iocs;
-            }
-
-            if (ioc_count > 0) {
-                app_topology->n_io_concentrators = ioc_count;
-                *thisapp = app_topology;
-                // topology_id = (hid_t)record_subfiling_object(SF_TOPOLOGY,
-                // app_topology);
-            }
-        } else {
-            if (world_rank == 0) {
-                printf("[%d - %s] IOC_selection(%d) with option(%s) is not "
-                       "supported\n",
-                    world_rank, __func__, (int) ioc_select_method,
-                    ioc_select_option);
-            }
-        }
-    } else {
-        app_topology = (sf_topology_t *) get_subfiling_object(topology_id);
-        *thisapp = app_topology;
-    }
-    return ioc_count;
-}
-#endif
 
 /* ===================================================================== */
 /* MPI_Datatype Creation functions.
@@ -1264,15 +1164,16 @@ int
 H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
     subfiling_context_t *newContext)
 {
-    static MPI_Comm sf_msg_comm = MPI_COMM_NULL;
-    static MPI_Comm sf_data_comm = MPI_COMM_NULL;
+    MPI_Comm sf_msg_comm = MPI_COMM_NULL;
+    MPI_Comm sf_data_comm = MPI_COMM_NULL;
 
     assert(newContext != NULL);
 
-    if (newContext->topology != thisApp) {
+    // printf("Entering %s\n", __func__);
+    if (1 /* newContext->topology != thisApp */) {
         int   status;
         char *envValue = NULL;
-
+        // puts("Initializing newContext");
         newContext->topology = thisApp;
         newContext->sf_msg_comm = sf_msg_comm;
         newContext->sf_data_comm = sf_data_comm;
@@ -1381,22 +1282,23 @@ static int
 read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, void *data)
 {
-    int          i, ioc, n_waiting = 0, status = 0;
+    int          i, ioc, isends,n_waiting = 0, status = 0;
     int *        io_concentrator = NULL;
     int          indices[n_io_concentrators];
+    MPI_Request  sreqs[n_io_concentrators];
     MPI_Request  reqs[n_io_concentrators];
     MPI_Status   stats[n_io_concentrators];
     int64_t      source_data_offset[n_io_concentrators];
     int64_t      ioc_read_datasize[n_io_concentrators];
     int64_t      ioc_read_offset[n_io_concentrators];
     MPI_Datatype ioc_read_type[n_io_concentrators];
-    useconds_t   delay = 100;
+    // useconds_t   delay = 100;
+    useconds_t   delay = 20;
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context != NULL);
 
 
-    /* Note that the sf_write_count is only tracked by an IOC rank */
     if (sf_context->sf_write_count && (sf_context->sf_fid > 0)) {
         fdatasync(sf_context->sf_fid);
 
@@ -1404,7 +1306,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * if we extend out delaying tactic when awaiting
          * responses.
          */
-        delay *= (useconds_t)(sf_context->topology->world_size);
+        // delay *= (useconds_t)(sf_context->topology->world_size);
     }
 
     io_concentrator = sf_context->topology->io_concentrator;
@@ -1429,6 +1331,8 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * Check the size to verify!
          */
         reqs[ioc] = MPI_REQUEST_NULL;
+        sreqs[ioc] = MPI_REQUEST_NULL;
+
         if (ioc_read_datasize[ioc] == 0) {
             continue;
         }
@@ -1444,12 +1348,13 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         }
 #endif
 
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[ioc],
-            READ_INDEP, sf_context->sf_msg_comm);
+        status = MPI_Send(msg, 3, MPI_INT64_T, io_concentrator[ioc],
+                           READ_INDEP, sf_context->sf_msg_comm);
         if (status != MPI_SUCCESS) {
             printf("[%d] MPI_Send failure!", sf_world_rank);
             return status;
         } else {
+
             if (ioc_read_type[ioc] == MPI_BYTE) {
                 int bytes = (int) ioc_read_datasize[ioc];
                 status = MPI_Irecv(&sourceData[sourceOffset], bytes,
@@ -1471,6 +1376,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             n_waiting++;
         }
     }
+
     /* We've queued all of the Async READs, now we just need to
      * complete them in any order...
      */
@@ -1643,18 +1549,19 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t      ioc_write_datasize[n_io_concentrators];
     int64_t      ioc_write_offset[n_io_concentrators];
     MPI_Datatype ioc_write_type[n_io_concentrators];
-	int          n_waiting = 0, status = 0, errors = 0;
+    int          n_waiting = 0, status = 0, errors = 0;
     int          i, target, ioc;
-    useconds_t   delay = 100;
+    // useconds_t   delay = 100;
+    useconds_t   delay = 20;
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context);
 
     io_concentrator = sf_context->topology->io_concentrator;
-	assert(io_concentrator);
+    assert(io_concentrator);
 
-	sf_world_size = sf_context->topology->world_size;
-	sf_world_rank = sf_context->topology->world_rank;
+    sf_world_size = sf_context->topology->world_size;
+    sf_world_rank = sf_context->topology->world_rank;
 
     if (sf_context->topology->rank_is_ioc) {
         sf_context->sf_write_count++;
@@ -1663,7 +1570,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * if we extend out delaying tactic when awaiting
          * responses.
          */
-        delay *= (useconds_t)(sf_context->topology->world_size);
+        // delay *= (useconds_t)(sf_context->topology->world_size);
     }
 
     /* The following function will initialize the collection of IO transfer
@@ -1983,79 +1890,57 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
     int         i, status;
     int         global_errors = 0, errors = 0;
     int         n_waiting = 0;
-	int         subfile_fid = 0;
+    int         subfile_fid = 0;
     int         indices[n_io_concentrators];
     int         ioc_acks[n_io_concentrators];
     MPI_Request reqs[n_io_concentrators];
     int *       io_concentrator = sf_context->topology->io_concentrator;
-	double      t0, t1;
+    double      t0, t1;
     /* The map from fid to context can now be cleared */
     clear_fid_map_entry(fid);
-#if 0
+    t0 = MPI_Wtime();
 
-    for (i = 0; i < n_io_concentrators; i++) {
-        int64_t msg[3] = {0, 0, sf_context->sf_context_id};
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], CLOSE_OP,
-            sf_context->sf_msg_comm);
-        if (status == MPI_SUCCESS) {
-            status = MPI_Irecv(&ioc_acks[i], 1, MPI_INT, io_concentrator[i],
-                COMPLETED, sf_context->sf_data_comm, &reqs[i]);
-        }
-        if (status != MPI_SUCCESS) {
-            printf("[%d] MPI close_subfiles failure!", sf_world_rank);
-            errors++;
-        } else
-            n_waiting++;
-    }
-
-    while (n_waiting) {
-        int ready = 0;
-        status = MPI_Waitsome(
-            n_io_concentrators, reqs, &ready, indices, MPI_STATUSES_IGNORE);
-        if (status != MPI_SUCCESS) {
-            int  len;
-            char estring[MPI_MAX_ERROR_STRING];
-            MPI_Error_string(status, estring, &len);
-            printf("[%d %s] MPI_ERROR! MPI_Waitsome returned an error(%s)\n",
-                sf_world_rank, __func__, estring);
-            fflush(stdout);
-            errors++;
-        }
-        for (i = 0; i < ready; i++) {
-            n_waiting--;
-        }
-    }
-
-#else
-	t0 = MPI_Wtime();
     /* Shutdown the main IOC thread */
     sf_shutdown_flag = 1;
-    /* Allow ioc_main to exit.*/
-    usleep(40);
 
-#endif
+    /* Allow ioc_main to exit.*/
+    usleep(20);
 
     if (sf_context->topology->rank_is_ioc) {
         if ((subfile_fid = sf_context->sf_fid) > 0) {
-		    if (fdatasync(subfile_fid) < 0)
-			    errors++;
+            if (fdatasync(subfile_fid) < 0)
+                errors++;
             if (close(subfile_fid) < 0)
-			    errors++;
+                errors++;
         }
         wait_for_thread_main();
         finalize_ioc_threads();
-		t1 = MPI_Wtime();
-        printf("[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf IOC_shutdown = %lf seconds\n",
-			   sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time, (t1 - t0));
-        fflush(stdout);
+
+#ifndef NDEBUG
+        if (sf_verbose_flag) {
+            t1 = MPI_Wtime();
+            if (sf_write_ops)
+                printf("[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf IOC_shutdown = %lf seconds\n",
+                   sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time, (t1 - t0));
+            if (sf_read_ops)
+                printf("[%d] pread perf: read_ops=%d wait=%lf pread=%lf IOC_shutdown = %lf seconds\n",
+                   sf_context->sf_group_rank, sf_read_ops, sf_read_wait_time, sf_pread_time, (t1 - t0));
+
+            fflush(stdout);
+        }
+#endif
     }
 
-    status = MPI_Allreduce(
-        &errors, &global_errors, 1, MPI_INT, MPI_SUM, sf_context->sf_data_comm);
+    if ((status = MPI_Comm_free(&sf_context->sf_msg_comm)) != MPI_SUCCESS)
+        errors++;
 
-    if (status != MPI_SUCCESS) {
+    if ((status = MPI_Allreduce(&errors, &global_errors, 1, MPI_INT, MPI_SUM,
+                                sf_context->sf_data_comm)) != MPI_SUCCESS)
         global_errors++;
-    }
+
+    if ((status = MPI_Comm_free(&sf_context->sf_data_comm)) != MPI_SUCCESS)
+        global_errors++;
+
     return global_errors;
 }
 
@@ -2082,6 +1967,28 @@ sf_close_subfiles(hid_t fid)
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context != NULL);
     return close__subfiles(sf_context, sf_context->topology->n_io_concentrators, fid);
+}
+
+int
+sf_shutdown_local_ioc(hid_t fid)
+{
+
+    int errors = 0;
+    hid_t context_id = fid_map_to_context(fid);
+    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    assert(sf_context != NULL);
+    if (sf_context->topology->rank_is_ioc) {
+        int any_busy = get_ioc_work_pending(sf_context);
+        int subfile_fid = sf_context->sf_fid;
+        sf_shutdown_flag = 1;
+        if (subfile_fid > 0) {
+            if (fdatasync(subfile_fid) < 0)
+                errors++;
+            if (close(subfile_fid) < 0)
+                errors++;
+        }
+    }
+    return 0;
 }
 
 /*-------------------------------------------------------------------------
@@ -2119,14 +2026,13 @@ sf_close_subfiles(hid_t fid)
  *-------------------------------------------------------------------------
  */
 
-#if 1
 static int
 open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
     hid_t fid, int flags)
 {
-	int ret;
-	int g_errors = 0;
-	int l_errors = 0;
+    int ret;
+    int g_errors = 0;
+    int l_errors = 0;
 
     assert(sf_context != NULL);
 
@@ -2143,113 +2049,31 @@ open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
         return -1;
     }
 
-	if (sf_context->topology->rank_is_ioc) {
-		sf_work_request_t msg = {{flags,fid, sf_context->sf_context_id},
-								 OPEN_OP, sf_context->topology->world_rank,
-								 sf_context->topology->subfile_rank,
-								 sf_context->sf_context_id
-		};
+    if (sf_context->topology->rank_is_ioc) {
+        sf_work_request_t msg = {{flags,fid, sf_context->sf_context_id},
+                                 OPEN_OP, sf_context->topology->world_rank,
+                                 sf_context->topology->subfile_rank,
+                                 sf_context->sf_context_id
+        };
 
-		if (flags & O_CREAT)
-			sf_context->sf_fid = -1;
+        if (flags & O_CREAT)
+            sf_context->sf_fid = -1;
 
-		l_errors = subfiling_open_file(&msg, sf_context->topology->subfile_rank, flags);
-	}
-
-	g_errors = l_errors;
-
-	MPI_Allreduce(&l_errors, &g_errors, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-	if (g_errors) {
-		if (sf_context->topology->world_rank == 0) {
-			printf("%s: error count = %d\n", __func__, g_errors);
-			fflush(stdout);
-		}
-	}
-
-	return g_errors;
-}
-
-#else
-static int
-open__subfiles(subfiling_context_t *sf_context, int n_io_concentrators,
-    hid_t fid, int flags)
-{
-    int         i, ret, status, n_waiting = 0;
-    int *       io_concentrator = NULL;
-    int         indices[n_io_concentrators];
-    int         ioc_acks[n_io_concentrators];
-    MPI_Request reqs[n_io_concentrators];
-
-    assert(sf_context != NULL);
-
-    /*
-     * Save the HDF5 file id (fid) to subfile context mapping.
-     * There shouldn't be any issue, but check the status and
-     * return if there was a problem.
-     */
-    ret = record_fid_to_subfile(fid, sf_context->sf_context_id, NULL);
-    if (ret != SUCCEED) {
-        printf("[%d - %s] Error mapping hdf5 file to a subfiling context\n",
-            sf_context->topology->world_rank, __func__);
-        return -1;
+        l_errors = subfiling_open_file(&msg, sf_context->topology->subfile_rank, flags);
     }
 
-    /* We already know the number of IO concentrators, but
-     * grab the mapping of IO concentrator to MPI ranks for our
-     * messaging loop.
-     */
-    io_concentrator = sf_context->topology->io_concentrator;
+    g_errors = l_errors;
 
-    for (i = 0; i < n_io_concentrators; i++) {
-        int64_t msg[3] = {flags, fid, sf_context->sf_context_id};
-
-#ifndef NDEBUG
-        if (sf_verbose_flag) {
-            if (sf_logfile) {
-                fprintf(sf_logfile, "[%d] file open request (flags = %0lx)\n",
-                    sf_world_rank, msg[0]);
-            }
-        }
-#endif
-        /* Send the open_op message to an IOC */
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[i], OPEN_OP,
-            sf_context->sf_msg_comm);
-
-        /* Check for errors */
-        if (status == MPI_SUCCESS) {
-            /* And post a receive for the open file ACK */
-            status = MPI_Irecv(&ioc_acks[i], 1, MPI_INT, io_concentrator[i],
-                COMPLETED, sf_context->sf_data_comm, &reqs[i]);
-        }
-
-        if (status != MPI_SUCCESS) {
-            printf("[%d] MPI close_subfiles failure!", sf_world_rank);
-        } else
-            n_waiting++;
-    } /* END - for loop */
-
-    /* Wait for all (n_waiting) ACK messages to be received */
-    while (n_waiting) {
-        int ready = 0;
-        status = MPI_Waitsome(
-            n_io_concentrators, reqs, &ready, indices, MPI_STATUSES_IGNORE);
-        if (status != MPI_SUCCESS) {
-            int  len;
-            char estring[MPI_MAX_ERROR_STRING];
-            MPI_Error_string(status, estring, &len);
-            printf("[%d %s] MPI_ERROR! MPI_Waitsome returned an error(%s)\n",
-                sf_world_rank, __func__, estring);
+    MPI_Allreduce(&l_errors, &g_errors, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    if (g_errors) {
+        if (sf_context->topology->world_rank == 0) {
+            printf("%s: error count = %d\n", __func__, g_errors);
             fflush(stdout);
         }
+    }
 
-        for (i = 0; i < ready; i++) {
-            n_waiting--;
-        }
-    } /* END - while */
-
-    return 0;
+    return g_errors;
 }
-#endif
 
 /*-------------------------------------------------------------------------
  * Function:    Public/Client open_subfiles
@@ -2286,8 +2110,8 @@ sf_open_subfiles(hid_t fid, char *filename, char *file_directory, int flags)
     subfiling_context_t *sf_context = NULL;
     sf_ioc_selection_t   ioc_selection;
     char *option_arg = get_ioc_selection_criteria(&ioc_selection);
-	char filepath[PATH_MAX];
-	char *slash;
+    char filepath[PATH_MAX];
+    char *slash;
 
     status = H5FDsubfiling_init(ioc_selection, option_arg, &context_id);
     if (status != SUCCEED) {
@@ -2300,13 +2124,13 @@ sf_open_subfiles(hid_t fid, char *filename, char *file_directory, int flags)
 
     sf_context->sf_context_id = context_id;
     sf_context->h5_file_id = fid;
-	slash = strchr(filename,'/');
-	if (slash)
-		sf_context->filename = strdup(filename);
-	else {
-		sprintf(filepath,"%s%s", file_directory, filename);
-		sf_context->filename = strdup(filepath);
-	}
+    slash = strchr(filename,'/');
+    if (slash)
+        sf_context->filename = strdup(filename);
+    else {
+        sprintf(filepath,"%s%s", file_directory, filename);
+        sf_context->filename = strdup(filepath);
+    }
 
     sf_shutdown_flag = 0;
 
@@ -2419,6 +2243,7 @@ ioc_main(int64_t context_id)
     int                  max_work_depth;
     MPI_Status           status, msg_status;
     sf_work_request_t *  incoming_requests = NULL;
+    // useconds_t           delay = 20;
     useconds_t           delay = 20;
     subfiling_context_t *context = get_subfiling_object(context_id);
 
@@ -2427,8 +2252,8 @@ ioc_main(int64_t context_id)
     context->sf_fid = -1;
 
     subfile_rank = context->sf_group_rank;
-	sf_world_size = context->topology->world_size;
-	sf_world_rank = context->topology->world_rank;
+    sf_world_size = context->topology->world_size;
+    sf_world_rank = context->topology->world_rank;
     if (request_count_per_rank == NULL) {
         request_count_per_rank =
             (int *) calloc((size_t) sf_world_size, sizeof(int));
@@ -2448,10 +2273,12 @@ ioc_main(int64_t context_id)
     atomic_init(&sf_file_close_count, 0);
     atomic_init(&sf_file_refcount, 0);
     atomic_init(&sf_ioc_fini_refcount, 0);
+    atomic_init(&sf_ioc_ready, 1);
 
     sf_open_file_count = 0;   
     sf_close_file_count = 0;  
     sf_ops_after_first_close = 0;
+    // printf("%s: context->sf_msg_comm = %0x%x\n", __func__, context->sf_msg_comm );
 
     while (!sf_shutdown_flag || sf_work_pending) {
         flag = 0;
@@ -2473,6 +2300,7 @@ ioc_main(int64_t context_id)
                 ret = MPI_Recv(&incoming_requests[sf_workinprogress], count,
                     MPI_BYTE, source, tag, context->sf_msg_comm, &msg_status);
             }
+            // printf("Recv'ed message: ret=%d\n", ret);
             if (ret == MPI_SUCCESS) {
                 if (msg) {
                     msg->source = source;
@@ -2481,6 +2309,7 @@ ioc_main(int64_t context_id)
                     tpool_add_work(msg);
                 } else {
                     int index = atomic_load(&sf_workinprogress);
+                    // printf("Inbound: tag=%d, source=%d\n",tag, source);
                     incoming_requests[index].tag = tag;
                     incoming_requests[index].source = source;
                     incoming_requests[index].subfile_rank = subfile_rank;
@@ -2669,7 +2498,6 @@ queue_write_indep(
     }
 
     send_ack__(source, subfile_rank, WRITE_INDEP_ACK, comm);
-
     ret = MPI_Recv(recv_buffer, (int) data_size, MPI_BYTE, source,
         WRITE_INDEP_DATA, comm, &msg_status);
 
@@ -2714,9 +2542,9 @@ queue_write_indep(
            fflush(stdout);
            return -1;
         }
-	t_end = MPI_Wtime();
+        t_end = MPI_Wtime();
         t_write = t_end - t_start;
-	sf_pwrite_time += t_write;
+        sf_pwrite_time += t_write;
     }
     /* Done... */
     if (recv_buffer) {
@@ -2749,16 +2577,22 @@ int
 queue_read_indep(
     sf_work_request_t *msg, int subfile_rank, int source, MPI_Comm comm)
 {
+    static size_t        prev_sf_write_count = 0;
     int                  fd;
     char *               send_buffer = NULL;
     int                  ret = MPI_SUCCESS;
     int64_t              data_size = msg->header[0];
     int64_t              file_offset = msg->header[1];
     int64_t              file_context_id = msg->header[2];
+    double               t_start, t_end;
+    double               t_wait, t_read;
+
     subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
     sf_context->sf_read_count++;
+    /* For debugging performance */
+    sf_read_ops++;
 
     fd = sf_context->sf_fid;
 
@@ -2768,11 +2602,13 @@ queue_read_indep(
         return -1;
     }
 
+    t_start = MPI_Wtime();
+
     /* If there were writes to this file, we should flush the file cache
      * before attempting to read the contents.
      */
-    if (sf_context->sf_write_count) {
-        sf_context->sf_write_count = 0;
+    if (sf_context->sf_write_count != prev_sf_write_count) {
+        prev_sf_write_count = sf_context->sf_write_count;
         fdatasync(fd);
     }
 
@@ -2790,16 +2626,15 @@ queue_read_indep(
         return -1;
     }
 
-    if (sf_read_data(fd, file_offset, send_buffer, data_size, subfile_rank) <
-        0) {
+    if (sf_read_data(fd, file_offset, send_buffer, data_size, subfile_rank) < 0) {
         printf("[%d] %s - sf_read_data for source(%d) returned an error! "
                "read_count=%ld\n",
             subfile_rank, __func__, source, sf_context->sf_read_count);
         fflush(stdout);
         return -1;
     }
-    ret = MPI_Send(
-        send_buffer, (int) data_size, MPI_BYTE, source, READ_INDEP_DATA, comm);
+    
+    ret = MPI_Send(send_buffer, (int) data_size, MPI_BYTE, source, READ_INDEP_DATA, comm);
     if (ret != MPI_SUCCESS) {
         int  len;
         char estring[MPI_MAX_ERROR_STRING];
@@ -2810,6 +2645,10 @@ queue_read_indep(
         fflush(stdout);
         return ret;
     }
+    t_end = MPI_Wtime();
+    t_read = t_end - t_start;
+    sf_pread_time += t_read;
+
 #ifndef NDEBUG
     if (sf_verbose_flag) {
         if (sf_logfile) {
@@ -2918,7 +2757,8 @@ decrement_file_ref_counts(sf_work_request_t *msg, int subfile_rank,
 
         /* Wait until any queued work has finished */
         while (!tpool_is_empty()) {
-            usleep(20);
+            // usleep(20);
+            usleep(0);
         }
 
         if (callback_ftn(subfile_rank, &sf_context->sf_fid, comm) < 0) {
@@ -3003,7 +2843,7 @@ subfiling_close_file(int subfile_rank, int *fid, MPI_Comm comm)
 int
 subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
 {
-    int ret, source = 0;
+    int ret,  source = 0;
     int subfile_fid = *fid;
     int errors = 0, flag = COMPLETED;
     if (subfile_fid >= 0) {
@@ -3017,32 +2857,10 @@ subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
 
     /* Shutdown the main IOC thread */
     sf_shutdown_flag = 1;
+
     /* Allow ioc_main to exit.*/
-    usleep(40);
-
-    /* Notify all ranks */
-    for (source = 0; source < sf_world_size; source++) {
-        /* Don't release our local MPI process until all
-         * other ranks are released.
-         */
-        if (source == sf_world_rank) {
-            continue;
-        }
-        ret = MPI_Send(&flag, 1, MPI_INT, source, COMPLETED, comm);
-        if (ret != MPI_SUCCESS)
-            errors++;
-    }
-
-    /* Release the local MPI process */
-    ret = MPI_Send(&flag, 1, MPI_INT, sf_world_rank, COMPLETED, comm);
-    if (ret != MPI_SUCCESS)
-        errors++;
-
-    if (errors) {
-        printf("[ioc(%d) %s] Errors sending ioc_fini replies\n", subfile_rank,
-            __func__);
-        fflush(stdout);
-    }
+    // usleep(40);
+    usleep(20);
 
     return errors;
 }
@@ -3119,16 +2937,17 @@ subfiling_open_file(
     sf_work_request_t *msg, int subfile_rank, int flags)
 {
     int errors = 0;
-	double t_start=0.0, t_end=0.0;
+    int subfile_fid = -1;
+
+    double t_start=0.0, t_end=0.0;
     /* Only the real IOCs open the subfiles
      * Once a file is opened, all additional file open requests
      * can return immediately.
      */
-	t_start = MPI_Wtime();
+    t_start = MPI_Wtime();
     if (subfile_rank >= 0) {
         char                 filepath[PATH_MAX];
         char                 config[PATH_MAX];
-        int                  subfile_fid;
         int64_t              h5_file_id = msg->header[1];
         int64_t              file_context_id = msg->header[2];
         subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
@@ -3139,8 +2958,8 @@ subfiling_open_file(
         if (sf_context->sf_fid < 0) {
             int  n_io_concentrators = sf_context->topology->n_io_concentrators;
             int *io_concentrator = sf_context->topology->io_concentrator;
-                        char *prefix = NULL;
-                        char *subfile_dir = NULL;
+            char *prefix = NULL;
+            char *subfile_dir = NULL;
             const char *dotconfig = ".subfile_config";
             mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
@@ -3156,16 +2975,13 @@ subfiling_open_file(
                       subfile_rank, n_io_concentrators);
             }
 
-            if ((subfile_fid = open(filepath, flags, mode)) < 0) {
+            if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
                 end_thread_exclusive();
                 printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
                 fflush(stdout);
                 errors++;
                 goto done;
             }
-
-			sf_context->sf_fid = subfile_fid;
-
             strcpy(filepath,sf_context->filename);
             subfile_dir = strrchr(filepath, '/');
             if (subfile_dir) {
@@ -3222,14 +3038,20 @@ subfiling_open_file(
                 }
             }
 #endif
+            // printf("sf_context->sf_fid = %d\n", sf_context->sf_fid);
         }
         end_thread_exclusive();
     }
 done:
-	t_end = MPI_Wtime();
-    printf("subfiling_open_file completed in %lf seconds with %d errors\n",
-		   (t_end - t_start), errors);
-    fflush(stdout);
+    t_end = MPI_Wtime();
+
+#ifndef NDEBUG
+    if (sf_verbose_flag) {
+        printf("subfiling_open_file completed in %lf seconds with %d errors\n",
+               (t_end - t_start), errors);
+        fflush(stdout);
+    }
+#endif
     return errors;
 }
 
