@@ -281,8 +281,8 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     int                  active_file_maps = active_map_entries();
     int64_t              tag = SF_CONTEXT;
     int64_t              context_id = ((tag << 32) | active_file_maps);
-    subfiling_context_t *newContext =
-        (subfiling_context_t *) get_subfiling_object(context_id);
+    subfiling_context_t *newContext = (subfiling_context_t *) get_subfiling_object(context_id);
+    char                *envValue = NULL;
 
     FUNC_ENTER_API(FAIL)
     H5TRACE3("e", "x*s*IL", ioc_select_method, ioc_select_option, sf_context);
@@ -306,6 +306,13 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     }
 
     newContext->sf_context_id = context_id;
+
+	/* Maybe set the verbose flag for more debugging info */
+	envValue = getenv("SF_VERBOSE_FLAG");
+	if (envValue != NULL) {
+		int check_value = atoi(envValue);
+		if (check_value > 0) sf_verbose_flag = 1;
+	}
 
     if (H5FD__init_subfile_context(
             thisApp, ioc_count, world_rank, newContext) != SUCCEED) {

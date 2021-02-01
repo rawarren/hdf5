@@ -177,6 +177,122 @@ gather_topology_info(sf_topology_t *info)
  *
  *-------------------------------------------------------------------------
  */
+#if 1
+static int
+count_nodes(sf_topology_t *info, int my_rank)
+{
+    int  k, node_count, hostid_index = -1;
+    long nextid;
+
+    assert(info != NULL);
+
+    if (info->layout == NULL) {
+        gather_topology_info(info);
+    }
+
+	if (info->node_ranks == NULL) {
+		info->node_ranks = (int *) calloc((size_t)(info->world_size + 1), sizeof(int));
+    }
+
+    assert(info->node_ranks != NULL);
+
+    nextid = info->layout[0].hostid;
+	/* Possibly record my hostid_index */
+	if (info->layout[0].rank == my_rank) {
+		hostid_index = 0;
+    }
+
+	info->node_ranks[0] = 0;	/* Add index */
+    node_count = 1;
+
+    /* Recall that the topology array has been sorted! */
+    for (k = 1; k < info->world_size; k++) {
+		/* Possibly record my hostid_index */
+		if (info->layout[k].rank == my_rank)
+			hostid_index = k;
+        if (info->layout[k].hostid != nextid) {
+            nextid = info->layout[k].hostid;
+            /* Record the index of new hostid */
+            info->node_ranks[node_count++] = k;
+        }
+    }
+
+    /* Mark the end of the node_ranks */
+    info->node_ranks[node_count] = info->world_size;
+    /* Save the index where we first located my hostid */
+    info->node_index = hostid_index;
+    return info->node_count = node_count;
+}
+
+
+/*-------------------------------------------------------------------------
+ * Function:    identify_ioc_ranks
+ *
+ * Purpose:     We've already identified the number of unique nodes and
+ *              have a sorted list layout_t structures.  Under normal
+ *              conditions, we only utilize a single IOC per node. Under
+ *              that circumstance, we only need to fill the io_concentrator
+ *              vector from the node_ranks array (which contains the index
+ *              into the layout array of lowest MPI rank on each node) into
+ *              the io_concentrator vector;
+ *              Otherwise, while determining the number of local_peers per
+ *              node, we can also select one or more additional IOCs.
+ *
+ *              As a side effect, we fill the 'ioc_concentrator' vector
+ *              and set the 'rank_is_ioc' flag to TRUE if our rank is
+ *              identified as owning an IO Concentrator (IOC).
+ * 
+ *-------------------------------------------------------------------------
+ */
+
+static int 
+identify_ioc_ranks(int node_count, int iocs_per_node, sf_topology_t *info)
+{
+	int n;
+	int total_ioc_count = 0;
+	assert(info != NULL);
+	for (n=0; n < node_count; n++) {
+		int k;
+		int node_index = info->node_ranks[n];
+		int local_peer_count = info->node_ranks[n+1] - info->node_ranks[n];
+		info->io_concentrator[total_ioc_count++] = (int)(info->layout[node_index++].rank);
+
+		if (info->layout[node_index-1].rank == info->world_rank) {
+			info->subfile_rank = total_ioc_count-1;
+			info->rank_is_ioc = TRUE;
+		}
+
+		for(k=1; k < iocs_per_node; k++) {
+			if (k < local_peer_count) {
+				if (info->layout[node_index].rank == info->world_rank) {
+					info->rank_is_ioc = TRUE;
+					info->subfile_rank = total_ioc_count;
+				}
+				info->io_concentrator[total_ioc_count++] = (int)(info->layout[node_index++].rank);
+			}
+		}
+	}
+
+	info->n_io_concentrators = total_ioc_count;
+	return total_ioc_count;
+}
+
+static inline void
+assign_ioc_ranks(int *io_concentrator, int ioc_count, int rank_multiple, sf_topology_t *app_topology )
+{
+    if (io_concentrator) {
+        int k, ioc_next, ioc_index;
+        for ( k=0, ioc_next = 0; ioc_next < ioc_count; ioc_next++) {
+            ioc_index = rank_multiple * k++;
+            io_concentrator[ioc_next] = (int)(app_topology->layout[ioc_index].rank);
+            if (io_concentrator[ioc_next] == app_topology->world_rank)
+			    app_topology->rank_is_ioc = TRUE;
+		}
+        app_topology->n_io_concentrators = ioc_count;
+    }
+}
+
+#else
 static int
 count_nodes(sf_topology_t *info)
 {
@@ -215,6 +331,7 @@ count_nodes(sf_topology_t *info)
     info->node_index = hostid_index;
     return info->node_count = node_count;
 }
+#endif
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__determine_ioc_count
@@ -251,6 +368,127 @@ count_nodes(sf_topology_t *info)
  *
  *-------------------------------------------------------------------------
  */
+#if 1
+int
+H5FD__determine_ioc_count(int world_size, int world_rank,
+    sf_ioc_selection_t ioc_select_method, char *ioc_select_option,
+    sf_topology_t **thisapp)
+{
+    int ioc_count = 0;
+    sf_ioc_selection_t ioc_selection = ioc_selection_options;
+    sf_topology_t * app_topology = NULL;
+
+    assert(thisapp != NULL);
+
+    if (!ioc_count || (ioc_selection != ioc_select_method)) {
+        int     rank_multiple = 0;
+        int     iocs_per_node = 1;
+        char *  envValue = NULL;
+        int *   io_concentrator = NULL;
+        // int     index = (int) ioc_select_method;
+
+        // int64_t tag = (int64_t) SF_TOPOLOGY;
+        // topology_id = (int64_t)((tag << 32) | index);
+
+		if ((app_topology = *thisapp) == NULL) 
+			app_topology = (sf_topology_t *) calloc(1, sizeof(sf_topology_t));
+
+        assert(app_topology != NULL);
+        app_topology->world_size = world_size;
+        app_topology->world_rank = world_rank;
+        if (app_topology->io_concentrator == NULL) {
+            app_topology->io_concentrator = io_concentrator =
+                (int *) HDmalloc(((size_t) world_size * sizeof(int)));
+        }
+        assert(io_concentrator != NULL);
+        app_topology->selection_type = ioc_selection = ioc_select_method;
+
+        if (ioc_select_method == SELECT_IOC_WITH_CONFIG) {
+            puts("SELECT_IOC_WITH_CONFIG: not supported yet...");
+            ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+            goto next;
+        }
+        if (ioc_select_method == SELECT_IOC_TOTAL) {
+            if (ioc_select_option) {
+                int checkValue = atoi(ioc_select_option);
+                if ((checkValue <= 0) ||  (checkValue >= world_size)) {
+                    ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+                    goto next;
+				}
+
+				ioc_count = checkValue;
+				rank_multiple = (world_size/checkValue);
+				assign_ioc_ranks(io_concentrator, ioc_count, rank_multiple, app_topology);
+                *thisapp = app_topology;
+            }
+            else {
+                puts("Missing option argument!");
+                ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+                goto next;
+            }
+        }
+        if (ioc_select_method == SELECT_IOC_EVERY_NTH_RANK) {
+            /* This is similar to the previous method (SELECT_IOC_TOTAL)
+             * in that the user chooses a rank multiple rather than an
+             * absolute number of IO Concentrators.  Unlike the former,
+             * we always start our selection with rank zero (0) and
+             * the apply the stride to identify other IOCs.
+             */
+            if (ioc_select_option) {
+                int checkValue = atoi(ioc_select_option);
+                if (checkValue == 0) { /* Error */
+                    ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+                    goto next;
+                }
+                rank_multiple = checkValue;
+                ioc_count = (world_size / rank_multiple);
+    
+                if ((world_size % rank_multiple) != 0) {
+					ioc_count++;
+                }
+
+				assign_ioc_ranks(io_concentrator, ioc_count, rank_multiple, app_topology);
+                *thisapp = app_topology;
+            }
+            else {
+                puts("Missing option argument!");
+                ioc_select_method = SELECT_IOC_ONE_PER_NODE;
+            }
+        }
+
+next:
+
+        if (ioc_select_method == SELECT_IOC_ONE_PER_NODE) {
+            app_topology->selection_type = ioc_select_method;
+            ioc_count = count_nodes(app_topology, world_rank);
+			
+            /* FIXME: This should ONLY be used for testing!
+             * For production, we should probably limit the
+             * number to a single IOC per node...
+             * (based on performance numbers)
+             */
+            if ((envValue = getenv("IOC_COUNT_PER_NODE")) != NULL) {
+                int value_check = atoi(envValue);
+                if (value_check > 0) {
+                    iocs_per_node = value_check;
+                }
+            }
+
+            ioc_count = identify_ioc_ranks( ioc_count, iocs_per_node, app_topology);
+        }
+        if (ioc_count > 0) {
+            app_topology->n_io_concentrators = ioc_count;
+            *thisapp = app_topology;
+		}
+    } else {
+		puts("Unable to create app_toplogy");
+    }
+
+    return ioc_count;
+}
+
+#else
+
 int
 H5FD__determine_ioc_count(int world_size, int world_rank,
     sf_ioc_selection_t ioc_select_method, char *ioc_select_option,
@@ -390,7 +628,7 @@ next:
                 app_topology->node_ranks[node_index];
             if (app_topology->layout[node_index].rank == world_rank) {
                 app_topology->rank_is_ioc = true;
-                app_topology->subfile_rank = node_index;
+                app_topology->subfile_rank = app_topology->io_concentrator[node_index];
             }
             /* FIXME: This should ONLY be used for testing!
              * NOTE: The app_topology->local_peers is ONLY valid
@@ -442,6 +680,7 @@ next:
     }
     return ioc_count;
 }
+#endif
 
 
 /* ===================================================================== */
@@ -1161,19 +1400,16 @@ init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
  *-------------------------------------------------------------------------
  */
 int
-H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
-    subfiling_context_t *newContext)
+H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank, subfiling_context_t *newContext)
 {
     MPI_Comm sf_msg_comm = MPI_COMM_NULL;
     MPI_Comm sf_data_comm = MPI_COMM_NULL;
 
     assert(newContext != NULL);
-
-    // printf("Entering %s\n", __func__);
-    if (1 /* newContext->topology != thisApp */) {
+    if (newContext->topology == NULL) {
         int   status;
         char *envValue = NULL;
-        // puts("Initializing newContext");
+
         newContext->topology = thisApp;
         newContext->sf_msg_comm = sf_msg_comm;
         newContext->sf_data_comm = sf_data_comm;
@@ -1221,6 +1457,7 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
         if (n_iocs > 1) {
             status = MPI_Comm_split(MPI_COMM_WORLD, thisApp->rank_is_ioc,
                 world_rank, &newContext->sf_group_comm);
+
             if (status != MPI_SUCCESS)
                 goto err_exit;
             status = MPI_Comm_size(
@@ -1236,7 +1473,6 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank,
              * If so, then can probably initialize those things here!
              */
         } else {
-            newContext->sf_group_comm = MPI_COMM_SELF;
             newContext->sf_group_size = 1;
             newContext->sf_group_rank = 0;
         }
@@ -1931,16 +2167,26 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
 #endif
     }
 
-    if ((status = MPI_Comm_free(&sf_context->sf_msg_comm)) != MPI_SUCCESS)
-        errors++;
-
+#if 0
+	if (sf_context->sf_msg_comm != MPI_COMM_NULL) {
+        if ((status = MPI_Comm_free(&sf_context->sf_msg_comm)) != MPI_SUCCESS) {
+            errors++;
+        }
+    }
     if ((status = MPI_Allreduce(&errors, &global_errors, 1, MPI_INT, MPI_SUM,
-                                sf_context->sf_data_comm)) != MPI_SUCCESS)
+                                sf_context->sf_data_comm)) != MPI_SUCCESS) {
         global_errors++;
+    }
 
-    if ((status = MPI_Comm_free(&sf_context->sf_data_comm)) != MPI_SUCCESS)
-        global_errors++;
-
+	if (sf_context->sf_data_comm != MPI_COMM_NULL) {
+        if ((status = MPI_Comm_free(&sf_context->sf_data_comm)) != MPI_SUCCESS)
+            global_errors++;
+    }
+    if (sf_context->sf_group_comm != NULL) {
+        if ((status = MPI_Comm_free(&sf_context->sf_group_comm)) != MPI_SUCCESS)
+            global_errors++;
+    }		
+#endif
     return global_errors;
 }
 
@@ -2278,7 +2524,6 @@ ioc_main(int64_t context_id)
     sf_open_file_count = 0;   
     sf_close_file_count = 0;  
     sf_ops_after_first_close = 0;
-    // printf("%s: context->sf_msg_comm = %0x%x\n", __func__, context->sf_msg_comm );
 
     while (!sf_shutdown_flag || sf_work_pending) {
         flag = 0;
@@ -2944,6 +3189,7 @@ subfiling_open_file(
      * Once a file is opened, all additional file open requests
      * can return immediately.
      */
+
     t_start = MPI_Wtime();
     if (subfile_rank >= 0) {
         char                 filepath[PATH_MAX];
@@ -2974,7 +3220,6 @@ subfiling_open_file(
               sprintf(subfile_dir, "/%ld_node_local_temp_%d_of_%d", h5_file_id,
                       subfile_rank, n_io_concentrators);
             }
-
             if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
                 end_thread_exclusive();
                 printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
@@ -2989,7 +3234,7 @@ subfiling_open_file(
                         strcpy(config, filepath);
             }
 
-            if (flags & O_CREAT) {
+            if ((subfile_rank == 0) && (flags & O_CREAT)) {
                 FILE *f = NULL;
                                 
                 /* If a config file already exists, AND
@@ -3038,7 +3283,6 @@ subfiling_open_file(
                 }
             }
 #endif
-            // printf("sf_context->sf_fid = %d\n", sf_context->sf_fid);
         }
         end_thread_exclusive();
     }
@@ -3047,8 +3291,8 @@ done:
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
-        printf("subfiling_open_file completed in %lf seconds with %d errors\n",
-               (t_end - t_start), errors);
+        printf("[%s %d] open completed in %lf seconds with %d errors\n",
+               __func__, subfile_rank, (t_end - t_start), errors);
         fflush(stdout);
     }
 #endif
