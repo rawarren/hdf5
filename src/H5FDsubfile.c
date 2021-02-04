@@ -62,6 +62,7 @@ sf_context_cache   -- Storage for contexts
 static size_t               sf_context_limit = 16;
 static subfiling_context_t *sf_context_cache = NULL;
 
+
 /*
 -------------------------------------------------------------------------
   Programmer:  Richard Warren <Richard.Warren@hdfgroup.org>
@@ -298,6 +299,8 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
         goto done;
     }
 
+    sf_open_file_count++;
+
     if ((ioc_count = H5FD__determine_ioc_count(world_size, world_rank,
              ioc_select_method, ioc_select_option, &thisApp)) <= 0) {
         puts("Unable to register subfiling topology!");
@@ -307,12 +310,17 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
 
     newContext->sf_context_id = context_id;
 
-	/* Maybe set the verbose flag for more debugging info */
-	envValue = getenv("SF_VERBOSE_FLAG");
-	if (envValue != NULL) {
-		int check_value = atoi(envValue);
-		if (check_value > 0) sf_verbose_flag = 1;
-	}
+    /* Maybe set the verbose flag for more debugging info */
+    envValue = getenv("SF_VERBOSE_FLAG");
+    if (envValue != NULL) {
+        int check_value = atoi(envValue);
+        if (check_value > 0) sf_verbose_flag = 1;
+    }
+
+    /* Maybe open client-side log files */
+    if (sf_verbose_flag ) {
+        manage_client_logfile(world_rank,sf_verbose_flag);
+    }
 
     if (H5FD__init_subfile_context(
             thisApp, ioc_count, world_rank, newContext) != SUCCEED) {
@@ -324,18 +332,22 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
     atomic_init(&sf_ioc_ready, 0);
 
     if (newContext->topology->rank_is_ioc) {
-		int ready;
-		int status = initialize_ioc_threads(newContext);
+        int status = 0;
+        int ready;
 
+        if (sf_verbose_flag)
+            set_verbose_flag(newContext->topology->subfile_rank, sf_verbose_flag);
+
+        status = initialize_ioc_threads(newContext);
         if (status)
             goto done;
 
-		while((ready = atomic_load(&sf_ioc_ready)) == 0) {
-			usleep(20);
-		}
-		
-		if (newContext->topology->n_io_concentrators > 1)
-			MPI_Barrier(newContext->sf_group_comm);
+        while((ready = atomic_load(&sf_ioc_ready)) == 0) {
+            usleep(20);
+        }
+
+        if (newContext->topology->n_io_concentrators > 1)
+            MPI_Barrier(newContext->sf_group_comm);
     }
 
     if (context_id < 0) {
@@ -346,8 +358,8 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
 
 
 done:
-	/* Wait for helper threads / IO Concentrators to be initialized */
-	MPI_Barrier(MPI_COMM_WORLD);
+    /* Wait for helper threads / IO Concentrators to be initialized */
+    MPI_Barrier(MPI_COMM_WORLD);
 
     FUNC_LEAVE_API(ret_value)
 

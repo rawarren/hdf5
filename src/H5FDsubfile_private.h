@@ -168,9 +168,11 @@ extern atomic_int sf_file_close_count;
 extern atomic_int sf_file_refcount;
 extern atomic_int sf_ioc_ready;
 extern int        sf_verbose_flag;
+extern int        sf_open_file_count;
 
 #    ifndef NDEBUG
 extern FILE *sf_logfile;
+extern FILE *client_log;
 #    endif
 
 #    ifdef __cplusplus
@@ -230,6 +232,7 @@ H5_DLL int     active_map_entries(void);
 H5_DLL void    clear_fid_map_entry(hid_t sf_fid);
 H5_DLL hid_t   fid_map_to_context(hid_t sf_fid);
 H5_DLL void    set_verbose_flag(int subfile_rank, int new_value);
+H5_DLL void    manage_client_logfile(int client_rank, int new_value);
 H5_DLL int     sf_get_mpi_rank(hid_t fid, int *rank);
 H5_DLL int     sf_get_mpi_size(hid_t fid, int *size);
 H5_DLL int     sf_get_group_comm(hid_t fid, MPI_Comm *comm);
