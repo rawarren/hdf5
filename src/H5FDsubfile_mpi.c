@@ -1631,12 +1631,6 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 
     if (sf_context->topology->rank_is_ioc) {
         sf_context->sf_write_count++;
-
-        /* We can attempt to give the IOC more compute time
-         * if we extend out delaying tactic when awaiting
-         * responses.
-         */
-        // delay *= (useconds_t)(sf_context->topology->world_size);
     }
 
     /* The following function will initialize the collection of IO transfer
