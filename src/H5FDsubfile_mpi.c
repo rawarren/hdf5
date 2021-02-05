@@ -25,6 +25,7 @@ static double sf_write_wait_time = 0.0;
 static int sf_read_ops = 0;
 static double sf_pread_time = 0.0;
 static double sf_read_wait_time = 0.0;
+static double sf_queue_delay_time = 0.0;
 
 static int *request_count_per_rank = NULL;
 
@@ -1336,7 +1337,7 @@ static int
 read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, void *data)
 {
-    int          i, ioc, isends,n_waiting = 0, status = 0;
+    int          i, ioc, active_sends=0 ,n_waiting = 0, status = 0;
     int *        io_concentrator = NULL;
     int          indices[n_io_concentrators];
     MPI_Request  sreqs[n_io_concentrators];
@@ -1390,6 +1391,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             continue;
         }
 
+        active_sends++;
 #ifndef NDEBUG
         if (sf_verbose_flag) {
             if (client_log != NULL) {
@@ -1432,6 +1434,15 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         }
     }
 
+	if (active_sends > 1) {
+#ifndef NDEBUG
+       if (sf_verbose_flag && (client_log != NULL)) {
+          fprintf(client_log,
+                  "[%d %s] ioc spillovers = %d\n",
+                  sf_world_rank, __func__, active_sends-1);
+       }
+#endif
+	}
     /* We've queued all of the Async READs, now we just need to
      * complete them in any order...
      */
@@ -1604,9 +1615,9 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t      ioc_write_datasize[n_io_concentrators];
     int64_t      ioc_write_offset[n_io_concentrators];
     MPI_Datatype ioc_write_type[n_io_concentrators];
-    int          n_waiting = 0, status = 0, errors = 0;
+    int          active_sends = 0, n_waiting = 0, status = 0, errors = 0;
     int          i, target, ioc;
-    // useconds_t   delay = 100;
+
     useconds_t   delay = 20;
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
@@ -1674,6 +1685,8 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         if (ioc_write_datasize[ioc] == 0) {
             continue;
         }
+
+        active_sends++;
 
 #ifndef NDEBUG
         if (sf_verbose_flag)
@@ -1786,6 +1799,18 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         if (n_waiting)
             usleep(delay);
     }
+
+	if (active_sends > 1) {
+#ifndef NDEBUG
+       if (sf_verbose_flag && (client_log != NULL)) {
+          fprintf(client_log,
+                  "[%d %s] ioc spillovers = %d\n",
+                  sf_world_rank, __func__, active_sends-1);
+          fflush(client_log);
+       }
+#endif
+	}
+
     if (errors)
         return -1;
     return status;
@@ -1946,6 +1971,9 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
               if (sf_read_ops)
                 fprintf(sf_logfile, "[%d] pread perf: read_ops=%d wait=%lf pread=%lf IOC_shutdown = %lf seconds\n",
                    sf_context->sf_group_rank, sf_read_ops, sf_read_wait_time, sf_pread_time, (t1 - t0));
+
+              fprintf(sf_logfile,"[%d] Avg queue time=%lf seconds\n", sf_context->sf_group_rank,
+                      sf_queue_delay_time/(double)(sf_write_ops+sf_read_ops));
 
               fflush(sf_logfile);
 
@@ -2288,9 +2316,9 @@ ioc_main(int64_t context_id)
     int                  max_work_depth;
     MPI_Status           status, msg_status;
     sf_work_request_t *  incoming_requests = NULL;
-    // useconds_t           delay = 20;
     useconds_t           delay = 20;
     subfiling_context_t *context = get_subfiling_object(context_id);
+	double               queue_start_time;
 
     assert(context != NULL);
     /* We can't have opened any files at this point.. */
@@ -2340,19 +2368,20 @@ ioc_main(int64_t context_id)
                 ret = MPI_Recv(&incoming_requests[sf_workinprogress], count,
                     MPI_BYTE, source, tag, context->sf_msg_comm, &msg_status);
             }
-            // printf("Recv'ed message: ret=%d\n", ret);
+			queue_start_time = MPI_Wtime();
             if (ret == MPI_SUCCESS) {
                 if (msg) {
                     msg->source = source;
                     msg->subfile_rank = subfile_rank;
                     msg->context_id = context->sf_context_id;
+					msg->start_time = queue_start_time;
                     tpool_add_work(msg);
                 } else {
                     int index = atomic_load(&sf_workinprogress);
-                    // printf("Inbound: tag=%d, source=%d\n",tag, source);
                     incoming_requests[index].tag = tag;
                     incoming_requests[index].source = source;
                     incoming_requests[index].subfile_rank = subfile_rank;
+                    incoming_requests[index].start_time = queue_start_time;
                     tpool_add_work(&incoming_requests[index]);
                     if (index == max_work_depth - 1) {
                         atomic_init(&sf_workinprogress, 0);
@@ -2366,14 +2395,6 @@ ioc_main(int64_t context_id)
         }
     }
 
-#if 0
-#ifndef NDEBUG
-    if (sf_logfile) {
-        fclose(sf_logfile);
-        sf_logfile = NULL;
-    }
-#endif
-#endif
     if (incoming_requests) {
         free(incoming_requests);
     }
@@ -2511,7 +2532,7 @@ queue_write_indep(
     int64_t              file_offset = msg->header[1];
     int64_t              file_context_id = msg->header[2];
     double               t_start, t_end;
-    double               t_wait, t_write;
+    double               t_wait, t_write, t_queue_delay;
     subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
@@ -2519,6 +2540,9 @@ queue_write_indep(
     sf_context->sf_write_count++;
     /* For debugging performance */
     sf_write_ops++;
+
+    t_start = MPI_Wtime();
+	t_queue_delay = t_start - msg->start_time;
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
@@ -2529,7 +2553,7 @@ queue_write_indep(
         }
     }
 #endif
-    t_start = MPI_Wtime();
+
     if (recv_buffer == NULL) {
         if ((recv_buffer = (char *) malloc((size_t) data_size)) == NULL) {
             perror("malloc");
@@ -2587,6 +2611,9 @@ queue_write_indep(
         t_write = t_end - t_start;
         sf_pwrite_time += t_write;
     }
+
+	sf_queue_delay_time += t_queue_delay;
+
     /* Done... */
     if (recv_buffer) {
         free(recv_buffer);
@@ -2626,7 +2653,7 @@ queue_read_indep(
     int64_t              file_offset = msg->header[1];
     int64_t              file_context_id = msg->header[2];
     double               t_start, t_end;
-    double               t_wait, t_read;
+    double               t_wait, t_read, t_queue_delay;
 
     subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
     assert(sf_context != NULL);
@@ -2635,15 +2662,15 @@ queue_read_indep(
     /* For debugging performance */
     sf_read_ops++;
 
-    fd = sf_context->sf_fid;
+    t_start = MPI_Wtime();
+	t_queue_delay = t_start - msg->start_time;
 
+    fd = sf_context->sf_fid;
     if (fd < 0) {
         printf("[ioc(%d) %s] subfile(%d) file descriptor not valid\n",
             subfile_rank, __func__, fd);
         return -1;
     }
-
-    t_start = MPI_Wtime();
 
     /* If there were writes to this file, we should flush the file cache
      * before attempting to read the contents.
@@ -2689,6 +2716,7 @@ queue_read_indep(
     t_end = MPI_Wtime();
     t_read = t_end - t_start;
     sf_pread_time += t_read;
+	sf_queue_delay_time += t_queue_delay;
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {

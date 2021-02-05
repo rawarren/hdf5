@@ -105,6 +105,7 @@ typedef struct {
     int     source;
     int     subfile_rank;
     hid_t   context_id;
+    double  start_time;
 } sf_work_request_t;
 
 typedef struct {

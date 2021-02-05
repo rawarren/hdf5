@@ -116,7 +116,7 @@ H5_init_library(void)
     {
 	int mpi_initialized;
 	int mpi_finalized;
-        int mpi_code;
+    int mpi_code;
 
 	MPI_Initialized(&mpi_initialized);
 	MPI_Finalized(&mpi_finalized);

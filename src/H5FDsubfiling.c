@@ -1639,7 +1639,7 @@ haddr_t get_data_offset(int mpi_rank, int mpi_size, size_t dtype_extent, const H
 
 
 static
-haddr_t get_base_offset(int mpi_rank, int mpi_size, hid_t mem_space_id, hid_t file_space_id)
+haddr_t get_base_offset(int mpi_rank, int mpi_size, size_t dtype_extent, hid_t mem_space_id, hid_t file_space_id)
 {
 	haddr_t this_base = 0;
 	int n_dims;
@@ -1663,15 +1663,19 @@ haddr_t get_base_offset(int mpi_rank, int mpi_size, hid_t mem_space_id, hid_t fi
 				puts("H5Sget_simple_extent_dims returned an error");
 
 			if (n_dims == 1) {
-				if ((total_size = mem_dims[0] * (hsize_t)mpi_size) == file_dims[0]) {
-					this_base = (mem_dims[0] * (hsize_t)mpi_rank);
-				}
+				if (mpi_rank == (mpi_size-1))
+					this_base = (file_dims[0] - mem_dims[0]) * dtype_extent;
+				else 
+					this_base = (mem_dims[0] * dtype_extent * (hsize_t)mpi_rank);
 			}
 			else {
 				int diff_index = -1;
 				if (check_dims(n_dims, mem_dims, file_dims, &diff_index) < 0)
 					puts("check_dims returned an error");
-				if ((total_size = mem_dims[diff_index] * (hsize_t)mpi_size) == file_dims[diff_index]) {
+				else {	/* CHECK-THIS!  What is the correct way? 
+                         * if the diff_index isn't 0, then we probably need
+                         * to do the multiplication of the dimensions...
+                         */
 					this_base = (mem_dims[diff_index] * (hsize_t)mpi_rank);
 				}
 			}
@@ -1726,7 +1730,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 		case H5S_SEL_POINTS:
 		{
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, dtype_extent, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			printf("[%d] H5S_SEL_POINTS - num_elem_file: %lld: UNSUPPORTED (for now)\n", mpi_rank, num_elem_file);
 			ret_value = -1;
@@ -1738,7 +1742,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 		{
 			int status;
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 
 			if ((status = H5Sis_regular_hyperslab(file_space_id)) < 0) {
@@ -1778,7 +1782,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 		{
 			int status;
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			if (num_elem_mem > 0) {
 				status = H5Sis_simple(file_space_id);
@@ -1835,7 +1839,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 		{
 			int status;
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			// printf("[%d] H5S_SEL_POINTS - num_elem_file: %lld: UNSUPPORTED (for now)\n", mpi_rank, num_elem_file);
 			ret_value = -1;
@@ -1849,7 +1853,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 			haddr_t rank_baseAddr;
 			const H5S_t *mem_space;
 			const H5S_t *file_space;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			if (H5S_get_validated_dataspace(mem_space_id, &mem_space) < 0) {
 				puts("could not get a validated dataspace from mem_space_id");
@@ -1895,7 +1899,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 		{
 			int status;
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			if (num_elem_mem > 0) {
 				status = H5Sis_simple(file_space_id);
