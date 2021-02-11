@@ -206,22 +206,11 @@ H5_DLL int     decrement_file_ref_counts(sf_work_request_t *msg, int subfile_ran
                    MPI_Comm comm, file_close_cb callback_ftn);
 H5_DLL int     increment_ioc_fini_counts(sf_work_request_t *msg, int subfile_rank, int source,
                    MPI_Comm comm, file_close_cb callback_ftn);
-H5_DLL int     sf_open_subfiles(hid_t context_id, char *filename, char *h5dir, int flags);
-H5_DLL int     sf_close_subfiles(hid_t context_id);
 H5_DLL int     sf_notify_shutdown(hid_t context_id);
 H5_DLL int     sf_write_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
                    int subfile_rank);
-H5_DLL int     sf_read_independent(hid_t sf_fid, int64_t offset, int64_t elements,
-                   int dtype_extent, void *data);
-H5_DLL int     sf_write_independent(hid_t sf_fid, int64_t offset, int64_t elements,
-                   int dtype_extent, const void *data);
 H5_DLL int     sf_read_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
                    int subfile_rank);
-H5_DLL herr_t  sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
-                   void *bufs[] /* in */);
-H5_DLL herr_t  sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
-                   void *bufs[] /* in */);
-H5_DLL int     sf_truncate(hid_t h5_fid, haddr_t addr);
 H5_DLL void    delete_subfiling_context(hid_t context_id);
 H5_DLL void    finalize_ioc_threads(void);
 H5_DLL int     begin_thread_exclusive(void);

@@ -12,6 +12,7 @@
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include "H5FDsubfile_private.h"
+#include "H5FDsubfiling.h"
 
 static int sf_world_rank = -1;
 static int sf_world_size = -1;
@@ -736,6 +737,7 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
     int64_t      offset_in_stripe = offset % stripe_size;
     int64_t      next_offset = blocksize_per_stripe - offset_in_stripe;
     int64_t      total_bytes = first_write + last_write;
+    int status = 0;
 
     /* We might actaully check that the 'target_write_bytes'
      * input variable exceeds 2Gb.  If so, then we should
@@ -782,13 +784,13 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
                 sf_world_rank, __func__, total_bytes, target_write_bytes);
         }
 
-        if (MPI_Type_indexed(k + 1, blocks, disps, MPI_BYTE, &newType) !=
-            MPI_SUCCESS) {
-            perror("MPI_Type_indexed failed!");
+		status = MPI_Type_indexed(k + 1, blocks, disps, MPI_BYTE, &newType);
+        if (status != MPI_SUCCESS) {
+            puts("MPI_Type_indexed failed!");
             return MPI_DATATYPE_NULL;
         }
 
-        MPI_Type_commit(&newType);
+        status = MPI_Type_commit(&newType);
         if (ioc_depth > 64) {
             if (blocks != temp_blocks) {
                 free(blocks);
@@ -798,6 +800,12 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
                 free(disps);
                 disps = NULL;
             }
+        }
+
+        if (status != MPI_SUCCESS) {
+            MPI_Type_free(newType);
+            puts("MPI_Type_commit failed!");
+            return MPI_DATATYPE_NULL;
         }
     }
     return newType;
@@ -1120,7 +1128,7 @@ init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
     int64_t final_length =
         (start_length == data_size ? 0 : final_offset % stripe_size);
     int64_t ioc_final = final_id % container_count;
-    int64_t container_bytes, total_bytes = 0;
+    int64_t container_bytes = 0, total_bytes = 0;
     int64_t source_offset = 0;
 
     int     row_id_start = (int) (start_id - ioc_start);
@@ -1130,7 +1138,7 @@ init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
     int64_t row_offset = (int64_t)(start_row * stripe_size);
 
     for (i = 0, k = (int) ioc_start; i < container_count; i++) {
-        int     container_depth = depth;
+        int container_depth = depth;
         hbool_t is_first = false, is_last = false;
         container_bytes = 0;
         sf_datasize[k] = container_bytes;
@@ -1864,7 +1872,7 @@ herr_t
 sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
     void *bufs[] /* data_in */)
 {
-    hssize_t             k;
+    hssize_t             status=0, k = 0;
     herr_t               ret_value = SUCCEED;
     hid_t                sf_context_id = fid_map_to_context(h5_fid);
     subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
@@ -1875,9 +1883,10 @@ sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
      * Call the underlying write function for each vector element.
      */
     for (k = 0; k < count; k++) {
-        if (write__independent(sf_context->topology->n_io_concentrators,
-                sf_context_id, (int64_t) addrs[k], (int64_t) sizes[k], 1,
-                bufs[k]) < 0) {
+        status = write__independent(sf_context->topology->n_io_concentrators,
+                                    sf_context_id, (int64_t) addrs[k],
+                                    (int64_t) sizes[k], 1, bufs[k]);
+        if (status < 0) {
             printf("%s - encountered an internal error!\n", __func__);
             goto errors;
         }
