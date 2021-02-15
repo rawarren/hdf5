@@ -43,7 +43,7 @@
 static hid_t H5FD_SUBFILING_g = 0;
 
 /* These are used for the creation of read or write vectors */
-static hsize_t  *sf_offsets = NULL;
+static haddr_t  *sf_offsets = NULL;
 static hsize_t  *sf_sizes = NULL;
 static void    **sf_bufs = NULL;
 
@@ -1236,7 +1236,7 @@ H5FD__subfiling_read_vector(H5FD_t *_file, hid_t dxpl_id, uint32_t count,
     /* Set DXPL for operation */
     H5CX_set_dxpl(dxpl_id);
     h5_fid = (hid_t)file->inode;
-    if(sf_read_vector(h5_fid, count, (hsize_t *)addrs, (hsize_t *)sizes, bufs) != SUCCEED)
+    if(sf_read_vector(h5_fid, count, addrs, (hsize_t *)sizes, bufs) != SUCCEED)
         HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")
 
 done:
@@ -1312,7 +1312,7 @@ H5FD__subfiling_write_vector(H5FD_t *_file, hid_t dxpl_id, uint32_t count,
     /* Set DXPL for operation */
     H5CX_set_dxpl(dxpl_id);
     h5_fid = (hid_t)file->inode;
-    if(sf_write_vector(h5_fid, count, (hsize_t *)addrs, (hsize_t *)sizes, bufs) != SUCCEED)
+    if(sf_write_vector(h5_fid, count, addrs, (hsize_t *)sizes, bufs) != SUCCEED)
         HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")
 
 done:
@@ -1490,9 +1490,9 @@ done:
 
 
 static
-herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, hssize_t elements, size_t type_extent, hssize_t *vlen, hsize_t **_offsets, hsize_t **_blocklens, void ***_bufs )
+herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, hssize_t elements, size_t type_extent, hssize_t *vlen, haddr_t **_offsets, hsize_t **_blocklens, void ***_bufs )
 {
-	hsize_t *offsets = *_offsets;
+	haddr_t *offsets = *_offsets;
 	hsize_t *blocklens = *_blocklens;
 	void   **bufs = *_bufs;
 	void *nextBuf = memDataBuf;
@@ -1504,7 +1504,7 @@ herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addr
 
 
 	if (*vlen < 0) {
-		offsets = (hsize_t *)malloc((sizeof(haddr_t)));
+		offsets = (haddr_t *)malloc((sizeof(haddr_t)));
 		assert(offsets);
 
 		blocklens = (hsize_t *)malloc((sizeof(hsize_t)));
@@ -1530,7 +1530,7 @@ herr_t create_simple_vector( hid_t file_space_id, void *memDataBuf, haddr_t addr
 
 
 static
-herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, size_t type_extent, hssize_t *vlen, hsize_t **_offsets, hsize_t **_blocklens, void ***_bufs )
+herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, haddr_t addrBase, size_t type_extent, hssize_t *vlen, haddr_t **_offsets, hsize_t **_blocklens, void ***_bufs )
 {
     herr_t ret_value = SUCCEED;
 	hssize_t k, n_blocks = H5Sget_select_hyper_nblocks(file_space_id);
@@ -1543,7 +1543,7 @@ herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, hadd
 	hsize_t *strides = stride;
 	hsize_t *counts = count;
 
-	hsize_t *offsets = *_offsets;
+	haddr_t *offsets = *_offsets;
 	hsize_t *blocklens = *_blocklens;
 	void   **bufs = *_bufs;
 
@@ -1568,9 +1568,9 @@ herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, hadd
 	/* Allocate storage for the vector elements */
 	if (*vlen < n_blocks) {
 		if (offsets) {
-			offsets = (hsize_t *)realloc(offsets, ((size_t)n_blocks * sizeof(haddr_t)));
+			offsets = (haddr_t *)realloc(offsets, ((size_t)n_blocks * sizeof(haddr_t)));
 		} else {
-			offsets = (hsize_t *)malloc(((size_t)n_blocks * sizeof(haddr_t)));
+			offsets = (haddr_t *)malloc(((size_t)n_blocks * sizeof(haddr_t)));
 		}
 		assert(offsets);
 		if (blocklens) {
@@ -1588,7 +1588,7 @@ herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, hadd
 		*vlen = n_blocks;
 	}
 	/* Fill vector elements */
-	if ((ret_value = H5Sget_regular_hyperslab(file_space_id, offsets, strides, counts, blocklens)) < 0) {
+	if ((ret_value = H5Sget_regular_hyperslab(file_space_id, (hsize_t *)offsets, strides, counts, blocklens)) < 0) {
 		puts("H5Sget_regular_hyperslab failed");
 		return -1;
 	}
@@ -1730,7 +1730,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 		case H5S_SEL_POINTS:
 		{
 			haddr_t rank_baseAddr;
-			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, mem_space_id, dtype_extent, file_space_id);
+			rank_baseAddr = get_base_offset(mpi_rank, mpi_size, dtype_extent, mem_space_id, file_space_id);
 			rank_baseAddr += dataset_baseAddr;
 			printf("[%d] H5S_SEL_POINTS - num_elem_file: %lld: UNSUPPORTED (for now)\n", mpi_rank, num_elem_file);
 			ret_value = -1;
@@ -1754,7 +1754,7 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 				hssize_t previous_vlen = sf_vlen;
 				if ((mem_space->extent.rank == 1)) {
 					if (sf_offsets == NULL)
-						sf_offsets = (hsize_t *)malloc(sizeof(hsize_t));
+						sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
 					if (sf_sizes == NULL)
 						sf_sizes = (hsize_t *)malloc(sizeof(hsize_t));
 					if (sf_bufs == NULL)
@@ -1871,7 +1871,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 				hssize_t previous_vlen = sf_vlen;
 				if (mem_space->extent.rank == 1) {
 					if (sf_offsets == NULL)
-						sf_offsets = (hsize_t *)malloc(sizeof(hsize_t));
+						sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
 					if (sf_sizes == NULL)
 						sf_sizes = (hsize_t *)malloc(sizeof(hsize_t));
 					if (sf_bufs == NULL)

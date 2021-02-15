@@ -1545,7 +1545,7 @@ sf_read_independent(hid_t sf_fid, int64_t offset, int64_t elements,
  *-------------------------------------------------------------------------
  */
 herr_t
-sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
+sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[],
     void *bufs[] /* data_out */)
 {
     hssize_t             k;
@@ -1869,7 +1869,7 @@ sf_write_independent(hid_t sf_fid, int64_t offset, int64_t elements,
  *-------------------------------------------------------------------------
  */
 herr_t
-sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[],
+sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[],
     void *bufs[] /* data_in */)
 {
     hssize_t             status=0, k = 0;

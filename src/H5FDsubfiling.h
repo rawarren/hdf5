@@ -82,8 +82,8 @@ H5_DLL int sf_open_subfiles(hid_t context_id, char *filename, char *prefix, int 
 H5_DLL int sf_close_subfiles(hid_t context_id);
 H5_DLL int sf_read_independent(hid_t sf_fid, int64_t offset, int64_t elements, int dtype_extent, void *data);
 H5_DLL int sf_write_independent(hid_t sf_fid, int64_t offset, int64_t elements, int dtype_extent, const void *data);
-H5_DLL herr_t sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* in */);
-H5_DLL herr_t sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* in */);
+H5_DLL herr_t sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[], void *bufs[] /* in */);
+H5_DLL herr_t sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[], void *bufs[] /* in */);
 H5_DLL int sf_truncate(hid_t h5_fid, haddr_t addr);
 H5_DLL int sf_shutdown_local_ioc(hid_t fid);
 
