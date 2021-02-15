@@ -803,7 +803,7 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
         }
 
         if (status != MPI_SUCCESS) {
-            MPI_Type_free(newType);
+            MPI_Type_free(&newType);
             puts("MPI_Type_commit failed!");
             return MPI_DATATYPE_NULL;
         }
