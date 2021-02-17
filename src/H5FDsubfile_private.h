@@ -161,8 +161,7 @@ typedef struct {
 
 #    define INT32_MASK 0x07FFFFFFFFFFFFFFF
 
-extern int sf_shutdown_flag;
-
+extern atomic_int sf_shutdown_flag;
 extern atomic_int sf_workinprogress;
 extern atomic_int sf_work_pending;
 extern atomic_int sf_file_close_count;

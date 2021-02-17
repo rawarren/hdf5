@@ -36,6 +36,7 @@ atomic_int sf_file_close_count = 0;
 atomic_int sf_file_refcount = 0;
 atomic_int sf_ioc_fini_refcount = 0;
 atomic_int sf_ioc_ready = 0;
+atomic_int sf_shutdown_flag = 0;
 
 int sf_open_file_count = 0;
 
@@ -68,8 +69,6 @@ typedef struct _ioc_stats {
 
 static ioc_stats_t ioc_xfer_records;
 
-
-int sf_shutdown_flag = 0;
 
 int client_op_index = 0;
 int client_op_size = 0;
@@ -1351,12 +1350,14 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     MPI_Request  sreqs[n_io_concentrators];
     MPI_Request  reqs[n_io_concentrators];
     MPI_Status   stats[n_io_concentrators];
+    int64_t      sourceOffset;
     int64_t      source_data_offset[n_io_concentrators];
     int64_t      ioc_read_datasize[n_io_concentrators];
     int64_t      ioc_read_offset[n_io_concentrators];
     MPI_Datatype ioc_read_type[n_io_concentrators];
-    // useconds_t   delay = 100;
-    useconds_t   delay = 20;
+    char *       sourceData = (char *) data;
+
+    useconds_t   delay = 10;
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context != NULL);
@@ -1382,10 +1383,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
      * and file offset for the actual data to be provided.
      */
     for (ioc = 0; ioc < n_io_concentrators; ioc++) {
-        int64_t msg[3] = {ioc_read_datasize[ioc], ioc_read_offset[ioc],
-            sf_context->sf_context_id};
-        char *  sourceData = (char *) data;
-        int64_t sourceOffset = source_data_offset[ioc];
+        int64_t msg[3] = {ioc_read_datasize[ioc], ioc_read_offset[ioc], sf_context->sf_context_id};
         int     packsize = 0;
 
         /* We may not require data from this IOC...
@@ -1399,17 +1397,17 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             continue;
         }
 
+        sourceOffset = source_data_offset[ioc];
+
         active_sends++;
 #ifndef NDEBUG
-        if (sf_verbose_flag) {
-            if (client_log != NULL) {
-                fprintf(client_log,
+        if (sf_verbose_flag && (client_log != NULL)) {
+            fprintf(client_log,
                     "[%d %s]: read_src[ioc(%d), "
                     "sourceOffset=%ld, datasize=%ld, foffset=%ld]\n",
                     sf_world_rank, __func__, ioc, sourceOffset,
                     ioc_read_datasize[ioc], ioc_read_offset[ioc]);
-                fflush(client_log);
-            }
+            fflush(client_log);
         }
 #endif
 
@@ -1456,7 +1454,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
      */
     while (n_waiting) {
         int ready = 0;
-        status = MPI_Waitsome(n_io_concentrators, reqs, &ready, indices, stats);
+        status = MPI_Testsome(n_io_concentrators, reqs, &ready, indices, stats);
         if (status != MPI_SUCCESS) {
             int  length = 256;
             char error_string[length];
@@ -1615,18 +1613,23 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, const void *data)
 {
     int *        io_concentrator = NULL;
+
     int          acks[n_io_concentrators];
     int          indices[n_io_concentrators];
     MPI_Request  reqs[n_io_concentrators];
+    MPI_Request  ackreq[n_io_concentrators];
     MPI_Status   stats[n_io_concentrators];
+    int64_t      sourceOffset;
     int64_t      source_data_offset[n_io_concentrators];
     int64_t      ioc_write_datasize[n_io_concentrators];
     int64_t      ioc_write_offset[n_io_concentrators];
     MPI_Datatype ioc_write_type[n_io_concentrators];
     int          active_sends = 0, n_waiting = 0, status = 0, errors = 0;
     int          i, target, ioc;
+	double       t0, t1, t2;
+    char *       sourceData = (char *) data;
+    useconds_t   delay = 10;
 
-    useconds_t   delay = 20;
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context);
@@ -1661,28 +1664,26 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         return -1;
     }
 
-    /* Prepare the IOCs with a message which indicates the length
+    /* 
+	 * Prepare the IOCs with a message which indicates the length
      * of the actual data to be written.  We also provide the file
      * offset so that when the IOC recieves the data (in whatever order)
      * they can lseek to the correct offset and write the data.
-     *
-     * NOTE: we use 'pwrite' which provides the seek functionality
-     * as part of the API.
+     * These messages are all posted with MPI_Isend, so that we can
+     * have overlapping operations running in parallel...
      */
-    for (target = 0; target < n_io_concentrators; target++) {
-        int64_t sourceOffset;
-        int64_t msg[3] = {
-            0,
-        };
-        const char *sourceData = (const char *) data;
-        ioc = (sf_world_rank + target) % n_io_concentrators;
+	t0 = MPI_Wtime();			/* Clock snapshot */
 
+    for (target = 0; target < n_io_concentrators; target++) {
+        int64_t msg[3] = { 0, };
+        ioc = (sf_world_rank + target) % n_io_concentrators;
         sourceOffset = source_data_offset[ioc];
         msg[0] = ioc_write_datasize[ioc];
         msg[1] = ioc_write_offset[ioc];
         msg[2] = sf_context->sf_context_id;
         acks[ioc] = 0;
         reqs[ioc] = MPI_REQUEST_NULL;
+        ackreq[ioc] = MPI_REQUEST_NULL;
 
         if (ioc_write_datasize[ioc] == 0) {
             continue;
@@ -1703,9 +1704,8 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             }
         }
 #endif
-
-
-        /* Send the Message HEADER which indicates the requested IO operation
+        /*
+         * Send the Message HEADER which indicates the requested IO operation
          * (via the message TAG) along with the data size and file offset.
          */
 
@@ -1723,62 +1723,100 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             break; /* If unable to send to an IOC, we can call it quits...  */
         }
 
-        /* Wait for memory to be allocated on the target IOC so that we can
-         * start sending user data to this IOC.
-         * FIXME: We could possibly use Irecv for handling ACKs.  This could
-         * potentially allow some additional overlap of posting IO requests
-         * to the collection of IO Concentrators.
+        /* 
+         * We wait for memory to be allocated on the target IOC so that we can
+         * start sending user data. Once memory is allocated, we will receive
+         * an ACK (or NACK) message from the IOC to allow us to proceed.
          */
-        status = MPI_Recv(&acks[ioc], 1, MPI_INT, io_concentrator[ioc],
-            WRITE_INDEP_ACK, sf_context->sf_data_comm, &stats[ioc]);
+        status = MPI_Irecv(&acks[ioc], 1, MPI_INT, io_concentrator[ioc],
+						   WRITE_INDEP_ACK, sf_context->sf_data_comm, &ackreq[ioc]);
 
-        if (status == MPI_SUCCESS) {
+		if (status != MPI_SUCCESS) {
+			printf("[%d %s] MPI_Irecv failed\n", sf_world_rank, __func__);
+			fflush(stdout);
+		}
+	}
+
+	n_waiting = active_sends;
+
+	while (n_waiting) {
+		int ready = 0;
+        status = MPI_Testsome(n_io_concentrators, ackreq, &ready, indices, stats);
+        if (status != MPI_SUCCESS) {
+            int  len = MPI_MAX_ERROR_STRING;
+            char estring[MPI_MAX_ERROR_STRING];
+            MPI_Error_string(status, estring, &len);
+            printf("[%d %s] MPI_ERROR! MPI_Testsome returned an error(%s)\n",
+                sf_world_rank, __func__, estring);
+            fflush(stdout);
+            errors++;
+        }
+		if (ready == 0) {
+            usleep(20);
+        }
+		for (i=0; i < ready; i++) {
+            int use_bytes = 1;
+			int from = indices[i];
+            sourceOffset = source_data_offset[from];
+            if (ackreq[from] > 0) {
+                if (ioc_write_type[from] == MPI_BYTE) {
+                    int datasize = (int) (ioc_write_datasize[from] & INT32_MASK);
+                    status = MPI_Isend(&sourceData[sourceOffset], datasize,
+                        MPI_BYTE, io_concentrator[from], WRITE_INDEP_DATA,
+                        sf_context->sf_data_comm, &reqs[from]);
+                } else {
+					use_bytes = 0;
+                    status = MPI_Isend(&sourceData[sourceOffset], 1,
+                        ioc_write_type[from], io_concentrator[from],
+                        WRITE_INDEP_DATA, sf_context->sf_data_comm, &reqs[from]);
+                }
+            }
+			else {
+                errors++;
+                puts("ACK error!");
+                fflush(stdout);
+			}
 #ifndef NDEBUG
             if (sf_verbose_flag) {
                 if (sf_logfile) {
-                    fprintf(sf_logfile, "[%d] received ack(%d) from ioc(%d)\n",
-                        sf_world_rank, acks[ioc], ioc);
+                   fprintf(sf_logfile, "[%d] received ack(%d) from ioc(%d)\n",
+                           sf_world_rank, acks[from], from);
                 }
             }
 #endif
-            /* No errors, start sending data to the IOC.
-             * If the data transfer is small enough, we don't utilize a
-             * derived MPI type, i.e. we use MPI_BYTE.
-             */
-            if (acks[ioc] > 0) {
-                if (ioc_write_type[ioc] == MPI_BYTE) {
-                    int datasize = (int) (ioc_write_datasize[ioc] & INT32_MASK);
-                    status = MPI_Issend(&sourceData[sourceOffset], datasize,
-                        MPI_BYTE, io_concentrator[ioc], WRITE_INDEP_DATA,
-                        sf_context->sf_data_comm, &reqs[ioc]);
-                } else {
-                    status = MPI_Issend(&sourceData[sourceOffset], 1,
-                        ioc_write_type[ioc], io_concentrator[ioc],
-                        WRITE_INDEP_DATA, sf_context->sf_data_comm, &reqs[ioc]);
-                }
-                n_waiting++;
+            /* Check the status of our MPI_Issend... */
+            if (status != MPI_SUCCESS) {
+                int debug_wait=1;
+				int  len = MPI_MAX_ERROR_STRING;
+				char estring[MPI_MAX_ERROR_STRING];
+				MPI_Error_string(status, estring, &len);
+				printf("[%d %s] MPI_ERROR! MPI_Isend returned an error(%s)\n",
+					   sf_world_rank, __func__, estring);
+				fflush(stdout);
+
+                errors++;
+				while(debug_wait) {
+					sleep(1);
+				}
             }
-        } else {
-            errors++;
-            puts("ACK error!");
-            fflush(stdout);
-            break;
+			n_waiting--;
         }
+	}
 
-        /* Check the status of our MPI_Issend... */
-        if (status != MPI_SUCCESS) {
-            errors++;
-            printf("[%d] ERROR! Unable to Send data to ioc(%d)\n",
-                sf_world_rank, ioc);
-            fflush(stdout);
-            break;
-        }
+#ifndef NDEBUG
+    t1 = MPI_Wtime();
+    if (sf_verbose_flag && (client_log != NULL)) {
+        fprintf(client_log, "[%d %s] time awaiting ACKs: %lf seconds)\n",
+				sf_world_rank, __func__, (t1 - t0));
     }
+#endif
 
-    /* Wait for the Issends to complete (in any order) */
+    /* Reset n_waiting from waiting on ACKS to waiting on the data Isends */
+	n_waiting = active_sends;
+
     while (n_waiting) {
         int ready = 0;
-        status = MPI_Waitsome(n_io_concentrators, reqs, &ready, indices, stats);
+        status = MPI_Testsome(n_io_concentrators, reqs, &ready, indices, stats);
         if (status != MPI_SUCCESS) {
             int  len;
             char estring[MPI_MAX_ERROR_STRING];
@@ -1788,6 +1826,9 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             fflush(stdout);
             errors++;
         }
+        if (ready == 0) {
+            usleep(20);
+		}
         for (i = 0; i < ready; i++) {
             /* One of the Issend calls has completed
              * If we used a derived type to send data, then should free
@@ -1798,9 +1839,15 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             }
             n_waiting--;
         }
-        if (n_waiting)
-            usleep(delay);
     }
+
+#ifndef NDEBUG
+    t2 = MPI_Wtime();
+    if (sf_verbose_flag && (client_log != NULL)) {
+        fprintf(client_log, "[%d %s] sending data = %lf seconds of total_time = %lf\n",
+                sf_world_rank, __func__, (t2 - t1), (t2 - t0));
+    }
+#endif
 
 	if (active_sends > 1) {
 #ifndef NDEBUG
@@ -1949,7 +1996,7 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
     t0 = MPI_Wtime();
 
     /* Shutdown the main IOC thread */
-    sf_shutdown_flag = 1;
+    atomic_store(&sf_shutdown_flag, 1);
 
     /* Allow ioc_main to exit.*/
     usleep(20);
@@ -2034,7 +2081,7 @@ sf_shutdown_local_ioc(hid_t fid)
     if (sf_context->topology->rank_is_ioc) {
         int any_busy = get_ioc_work_pending(sf_context);
         int subfile_fid = sf_context->sf_fid;
-        sf_shutdown_flag = 1;
+        atomic_store(&sf_shutdown_flag,1);
         if (subfile_fid > 0) {
             if (fdatasync(subfile_fid) < 0)
                 errors++;
@@ -2188,7 +2235,7 @@ sf_open_subfiles(hid_t fid, char *filename, char *file_directory, int flags)
         sf_context->filename = strdup(filepath);
     }
 
-    sf_shutdown_flag = 0;
+    atomic_init(&sf_shutdown_flag,0);
 
     return open__subfiles(sf_context, sf_context->topology->n_io_concentrators,
         fid, flags);
@@ -2317,6 +2364,7 @@ ioc_main(int64_t context_id)
     int                  subfile_rank;
     int                  flag, ret;
     int                  max_work_depth;
+    int                  shutdown_requested;
     MPI_Status           status, msg_status;
     sf_work_request_t *  incoming_requests = NULL;
     useconds_t           delay = 20;
@@ -2350,8 +2398,9 @@ ioc_main(int64_t context_id)
     atomic_init(&sf_file_refcount, 0);
     atomic_init(&sf_ioc_fini_refcount, 0);
     atomic_init(&sf_ioc_ready, 1);
+	shutdown_requested = 0;
 
-    while (!sf_shutdown_flag || sf_work_pending) {
+    while (!shutdown_requested || sf_work_pending) {
         flag = 0;
         ret = MPI_Iprobe(
             MPI_ANY_SOURCE, MPI_ANY_TAG, context->sf_msg_comm, &flag, &status);
@@ -2396,6 +2445,7 @@ ioc_main(int64_t context_id)
         } else {
             usleep(delay);
         }
+		shutdown_requested = atomic_load(&sf_shutdown_flag);
     }
 
     if (incoming_requests) {
@@ -2403,7 +2453,7 @@ ioc_main(int64_t context_id)
     }
 
     /* Reset the shutdown flag */
-    sf_shutdown_flag = 0;
+    atomic_init(&sf_shutdown_flag, 0);;
 
     return 0;
 }
@@ -2928,7 +2978,7 @@ subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
     }
 
     /* Shutdown the main IOC thread */
-    sf_shutdown_flag = 1;
+    atomic_store(&sf_shutdown_flag, 1);
 
     /* Allow ioc_main to exit.*/
     // usleep(40);
