@@ -1840,8 +1840,6 @@ H5VL_subfiling_file_open(const char *name, unsigned flags, hid_t fapl_id,
 #ifdef ENABLE_EXT_PASSTHRU_LOGGING
     printf("------- EXT PASS THROUGH VOL FILE Open\n");
 #endif
-	printf("[%s %d] %s\n", __func__, mpi_rank, name);
-	fflush(stdout);
 
     /* Get copy of our VOL info from FAPL */
     H5Pget_vol_info(fapl_id, (void **)&info);

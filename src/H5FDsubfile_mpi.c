@@ -1365,12 +1365,6 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 
     if (sf_context->sf_write_count && (sf_context->sf_fid > 0)) {
         fdatasync(sf_context->sf_fid);
-
-        /* We can attempt to give the IOC more compute time
-         * if we extend out delaying tactic when awaiting
-         * responses.
-         */
-        // delay *= (useconds_t)(sf_context->topology->world_size);
     }
 
     io_concentrator = sf_context->topology->io_concentrator;
@@ -1486,8 +1480,10 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             }
             n_waiting--;
         }
-        if (n_waiting)
+
+        if (n_waiting) {
             usleep(delay);
+        }
     }
     return status;
 }
@@ -1628,7 +1624,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int          i, target, ioc;
 	double       t0, t1, t2;
     char *       sourceData = (char *) data;
-    useconds_t   delay = 10;
+    useconds_t   delay = 20;
 
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
@@ -1692,16 +1688,13 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         active_sends++;
 
 #ifndef NDEBUG
-        if (sf_verbose_flag)
-        {
-            if (client_log != NULL) {
-               fprintf(client_log,
+        if (sf_verbose_flag && (client_log != NULL)) {
+            fprintf(client_log,
                     "[%d %s]: write_dest[ioc(%d), "
                     "sourceOffset=%ld, datasize=%ld, foffset=%ld]\n",
                     sf_world_rank, __func__, ioc, sourceOffset,
                     ioc_write_datasize[ioc], ioc_write_offset[ioc]);
-               fflush(client_log);
-            }
+            fflush(client_log);
         }
 #endif
         /*
@@ -1709,7 +1702,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * (via the message TAG) along with the data size and file offset.
          */
 
-        status = MPI_Ssend(msg, 3, MPI_INT64_T, io_concentrator[ioc],
+        status = MPI_Send(msg, 3, MPI_INT64_T, io_concentrator[ioc],
             WRITE_INDEP, sf_context->sf_msg_comm);
 
         if (status != MPI_SUCCESS) {
@@ -1751,9 +1744,11 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             fflush(stdout);
             errors++;
         }
-		if (ready == 0) {
-            usleep(20);
+
+        if (ready == 0) {
+            usleep(delay);
         }
+
 		for (i=0; i < ready; i++) {
             int use_bytes = 1;
 			int from = indices[i];
@@ -1777,14 +1772,13 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                 fflush(stdout);
 			}
 #ifndef NDEBUG
-            if (sf_verbose_flag) {
-                if (sf_logfile) {
-                   fprintf(sf_logfile, "[%d] received ack(%d) from ioc(%d)\n",
-                           sf_world_rank, acks[from], from);
-                }
-            }
+            if (sf_verbose_flag && (client_log != NULL)) {
+                fprintf(client_log, "[%d] received ack(%d) from ioc(%d)\n",
+                        sf_world_rank, acks[from], from);
+                fflush(client_log);
+             }
 #endif
-            /* Check the status of our MPI_Issend... */
+            /* Check the status of our MPI_Isend... */
             if (status != MPI_SUCCESS) {
                 int debug_wait=1;
 				int  len = MPI_MAX_ERROR_STRING;
@@ -1795,9 +1789,6 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 				fflush(stdout);
 
                 errors++;
-				while(debug_wait) {
-					sleep(1);
-				}
             }
 			n_waiting--;
         }
@@ -1810,6 +1801,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 				sf_world_rank, __func__, (t1 - t0));
     }
 #endif
+
 
     /* Reset n_waiting from waiting on ACKS to waiting on the data Isends */
 	n_waiting = active_sends;
@@ -1826,9 +1818,11 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             fflush(stdout);
             errors++;
         }
+
         if (ready == 0) {
-            usleep(20);
+            usleep(delay);
 		}
+
         for (i = 0; i < ready; i++) {
             /* One of the Issend calls has completed
              * If we used a derived type to send data, then should free
@@ -1840,6 +1834,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             n_waiting--;
         }
     }
+
 
 #ifndef NDEBUG
     t2 = MPI_Wtime();
@@ -2581,6 +2576,7 @@ queue_write_indep(
     char *               recv_buffer = NULL;
     int                  ret = MPI_SUCCESS;
     MPI_Status           msg_status;
+    MPI_Request          rcv_request = MPI_REQUEST_NULL;
     int64_t              data_size = msg->header[0];
     int64_t              file_offset = msg->header[1];
     int64_t              file_context_id = msg->header[2];
@@ -2601,8 +2597,8 @@ queue_write_indep(
     if (sf_verbose_flag) {
         if (sf_logfile) {
             fprintf(sf_logfile,
-                "[ioc(%d) %s]: msg from %d: datasize=%ld\toffset=%ld\n",
-                subfile_rank, __func__, source, data_size, file_offset);
+            "[ioc(%d) %s]: msg from %d: datasize=%ld\toffset=%ld, queue_delay = %lf seconds\n",
+            subfile_rank, __func__, source, data_size, file_offset, t_queue_delay);
         }
     }
 #endif
@@ -2879,8 +2875,7 @@ decrement_file_ref_counts(sf_work_request_t *msg, int subfile_rank,
 
         /* Wait until any queued work has finished */
         while (!tpool_is_empty()) {
-            // usleep(20);
-            usleep(0);
+            usleep(20);
         }
 
         if (callback_ftn(subfile_rank, &sf_context->sf_fid, comm) < 0) {
@@ -2981,7 +2976,6 @@ subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
     atomic_store(&sf_shutdown_flag, 1);
 
     /* Allow ioc_main to exit.*/
-    // usleep(40);
     usleep(20);
 
     return errors;
