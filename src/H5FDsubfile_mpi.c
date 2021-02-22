@@ -1756,12 +1756,12 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             if (ackreq[from] > 0) {
                 if (ioc_write_type[from] == MPI_BYTE) {
                     int datasize = (int) (ioc_write_datasize[from] & INT32_MASK);
-                    status = MPI_Isend(&sourceData[sourceOffset], datasize,
+                    status = MPI_Issend(&sourceData[sourceOffset], datasize,
                         MPI_BYTE, io_concentrator[from], WRITE_INDEP_DATA,
                         sf_context->sf_data_comm, &reqs[from]);
                 } else {
 					use_bytes = 0;
-                    status = MPI_Isend(&sourceData[sourceOffset], 1,
+                    status = MPI_Issend(&sourceData[sourceOffset], 1,
                         ioc_write_type[from], io_concentrator[from],
                         WRITE_INDEP_DATA, sf_context->sf_data_comm, &reqs[from]);
                 }
