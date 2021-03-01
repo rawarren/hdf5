@@ -342,11 +342,9 @@ H5FDsubfiling_init(sf_ioc_selection_t ioc_select_method, char *ioc_select_option
         if (status)
             goto done;
 
-        puts("Started ioc_main threads");
         while((ready = atomic_load(&sf_ioc_ready)) == 0) {
             usleep(20);
         }
-		puts("ioc_main is runnning");
 
         if (newContext->topology->n_io_concentrators > 1)
             MPI_Barrier(newContext->sf_group_comm);

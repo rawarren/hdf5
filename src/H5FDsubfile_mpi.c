@@ -18,6 +18,7 @@ static int sf_world_rank = -1;
 static int sf_world_size = -1;
 static int sf_close_file_count = 0;
 static int sf_ops_after_first_close = 0;
+static int sf_enable_directIO = 0;
 
 static int sf_write_ops = 0;
 static double sf_pwrite_time = 0.0;
@@ -28,7 +29,11 @@ static double sf_pread_time = 0.0;
 static double sf_read_wait_time = 0.0;
 static double sf_queue_delay_time = 0.0;
 
+#define SF_FILENAME_TEMPLATE "%ld_node_local_temp_%d_of_%d"
+static const char *sf_filename_template = SF_FILENAME_TEMPLATE;
+
 static int *request_count_per_rank = NULL;
+
 
 atomic_int sf_workinprogress = 0;
 atomic_int sf_work_pending = 0;
@@ -36,7 +41,7 @@ atomic_int sf_file_close_count = 0;
 atomic_int sf_file_refcount = 0;
 atomic_int sf_ioc_fini_refcount = 0;
 atomic_int sf_ioc_ready = 0;
-atomic_int sf_shutdown_flag = 0;
+volatile int sf_shutdown_flag = 0;
 
 int sf_open_file_count = 0;
 
@@ -83,6 +88,9 @@ client_xfer_info_t *client_ops = NULL;
 Private functions
 =========================================
 */
+
+static char * get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context);
+
 
 static void
 maybe_initialize_statistics(void)
@@ -492,6 +500,13 @@ next:
         }
         if (ioc_count > 0) {
             app_topology->n_io_concentrators = ioc_count;
+            /* Create a vector of "potential" file descriptors
+             * which can be indexed by the IOC id. 
+             */
+            app_topology->subfile_fd = (int *) HDcalloc(ioc_count, sizeof(int));
+            if (app_topology->subfile_fd == NULL) {
+                puts("Failed to allocate vector of subfile fds");
+            }
             *thisapp = app_topology;
         }
     } else {
@@ -783,7 +798,7 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
                 sf_world_rank, __func__, total_bytes, target_write_bytes);
         }
 
-		status = MPI_Type_indexed(k + 1, blocks, disps, MPI_BYTE, &newType);
+        status = MPI_Type_indexed(k + 1, blocks, disps, MPI_BYTE, &newType);
         if (status != MPI_SUCCESS) {
             puts("MPI_Type_indexed failed!");
             return MPI_DATATYPE_NULL;
@@ -1245,6 +1260,14 @@ H5FD__init_subfile_context(sf_topology_t *thisApp, int n_iocs, int world_rank, s
         newContext->sf_write_count = 0;
         newContext->sf_read_count = 0;
         newContext->sf_eof = 0;
+
+        if ((envValue = getenv("SF_ENABLE_DIRECTIO")) != NULL) {
+            int value_check = atoi(envValue);
+            if (value_check > 0) {
+                sf_enable_directIO = 1;
+            }
+        }
+
         if ((envValue = getenv("IOC_STRIPE_SIZE")) != NULL) {
             long value_check = atol(envValue);
             if (value_check > 0) {
@@ -1344,8 +1367,10 @@ static int
 read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, void *data)
 {
-    int          i, ioc, active_sends=0 ,n_waiting = 0, status = 0;
+    int          i, ioc, active_sends=0 ,n_waiting = 0, errors = 0, status = 0;
     int *        io_concentrator = NULL;
+    int *        subfile_fd = NULL;
+
     int          indices[n_io_concentrators];
     MPI_Request  sreqs[n_io_concentrators];
     MPI_Request  reqs[n_io_concentrators];
@@ -1362,10 +1387,14 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
     assert(sf_context != NULL);
 
+    subfile_fd = sf_context->topology->subfile_fd;
+    assert(subfile_fd != NULL);
 
+#if 0
     if (sf_context->sf_write_count && (sf_context->sf_fid > 0)) {
         fdatasync(sf_context->sf_fid);
     }
+#endif
 
     io_concentrator = sf_context->topology->io_concentrator;
     if (init__indep_io(sf_context, source_data_offset, ioc_read_datasize,
@@ -1384,6 +1413,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * or we may read the data directly from the file!
          * Check the size to verify!
          */
+
         reqs[ioc] = MPI_REQUEST_NULL;
         sreqs[ioc] = MPI_REQUEST_NULL;
 
@@ -1392,6 +1422,52 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         }
 
         sourceOffset = source_data_offset[ioc];
+
+        if (sf_enable_directIO && (subfile_fd[ioc] == 0)) {
+            char *subfile_path = get_ioc_subfile_path(ioc, n_io_concentrators, sf_context);
+            if (subfile_path != NULL) {
+                subfile_fd[ioc] = open(subfile_path, O_RDONLY);
+                if (subfile_fd[ioc] < 0) {
+                    perror("opening subfile failed\n");
+                }
+                else {
+                    if (ioc_read_type[ioc] == MPI_BYTE) {
+                        // printf("[%d] Read ioc(%d): MPI_BYTE elements = %lld, sourceOffset = %lld, foffset = %lld\n",
+                        //        sf_world_rank, ioc, elements, sourceOffset, ioc_read_offset[ioc]);
+
+                        errors += sf_read_data(subfile_fd[ioc], ioc_read_offset[ioc], &sourceData[sourceOffset], ioc_read_datasize[ioc], ioc);
+                    }
+                    else {
+                        int type_size;
+                        char *contig_buffer = NULL;
+                        int position = 0;
+                        int datasize = (int)ioc_read_datasize[ioc];
+                        contig_buffer = (char *)HDmalloc(datasize);
+                        assert(contig_buffer != NULL);
+                        MPI_Type_size(ioc_read_type[ioc], &type_size);
+                        // printf("[%d] Read type_size = %d elements = %lld\n", sf_world_rank, type_size);
+                        errors += sf_read_data(subfile_fd[ioc], ioc_read_offset[ioc], contig_buffer, ioc_read_datasize[ioc], ioc);
+                        if (MPI_Unpack(contig_buffer, datasize, &position, &sourceData[sourceOffset],
+                                       1, ioc_read_type[ioc], MPI_COMM_SELF) != MPI_SUCCESS) {
+                            puts("MPI_Unpack error!");
+                        }
+                        if (contig_buffer)
+                            HDfree(contig_buffer);
+                    }
+
+                    if (close(subfile_fd[ioc]) < 0) {
+                        perror("closing subfile failed");
+                    }
+
+                    subfile_fd[ioc] = 0;
+
+                    if (errors) {
+                        puts("sf_read_data returned an error!");
+                    }
+					else continue;
+                }
+            }
+        }
 
         active_sends++;
 #ifndef NDEBUG
@@ -1434,7 +1510,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         }
     }
 
-	if (active_sends > 1) {
+    if (active_sends > 1) {
 #ifndef NDEBUG
        if (sf_verbose_flag && (client_log != NULL)) {
           fprintf(client_log,
@@ -1442,7 +1518,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                   sf_world_rank, __func__, active_sends-1);
        }
 #endif
-	}
+    }
     /* We've queued all of the Async READs, now we just need to
      * complete them in any order...
      */
@@ -1571,6 +1647,27 @@ errors:
     return FAIL;
 }
 
+static char *
+get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context)
+{
+    static char filepath[PATH_MAX];
+    char *subfile_dir = NULL;
+    char *prefix = sf_context->subfile_prefix;
+
+    if (prefix != NULL) {
+        sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, prefix,
+                sf_context->h5_file_id, ioc, ioc_count);
+    }
+    else {
+        strcpy(filepath,sf_context->filename);
+        subfile_dir = strrchr(filepath, '/');
+        assert(subfile_dir);
+        sprintf(subfile_dir+1, SF_FILENAME_TEMPLATE, sf_context->h5_file_id,
+                ioc, ioc_count);
+    }
+    return filepath;
+}
+
 /*-------------------------------------------------------------------------
  * Function:    Internal write__independent.
  *
@@ -1609,6 +1706,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, const void *data)
 {
     int *        io_concentrator = NULL;
+    int *        subfile_fd = NULL;
 
     int          acks[n_io_concentrators];
     int          indices[n_io_concentrators];
@@ -1621,17 +1719,21 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t      ioc_write_offset[n_io_concentrators];
     MPI_Datatype ioc_write_type[n_io_concentrators];
     int          active_sends = 0, n_waiting = 0, status = 0, errors = 0;
+    int          direct_writes = 0, skipped_writes=0;
     int          i, target, ioc;
-	double       t0, t1, t2;
+    double       t0, t1, t2;
     char *       sourceData = (char *) data;
     useconds_t   delay = 20;
 
 
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
-    assert(sf_context);
+    assert(sf_context != NULL);
 
     io_concentrator = sf_context->topology->io_concentrator;
-    assert(io_concentrator);
+    assert(io_concentrator != NULL);
+
+    subfile_fd = sf_context->topology->subfile_fd;
+    assert(subfile_fd != NULL);
 
     sf_world_size = sf_context->topology->world_size;
     sf_world_rank = sf_context->topology->world_rank;
@@ -1661,14 +1763,14 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     }
 
     /* 
-	 * Prepare the IOCs with a message which indicates the length
+     * Prepare the IOCs with a message which indicates the length
      * of the actual data to be written.  We also provide the file
      * offset so that when the IOC recieves the data (in whatever order)
      * they can lseek to the correct offset and write the data.
      * These messages are all posted with MPI_Isend, so that we can
      * have overlapping operations running in parallel...
      */
-	t0 = MPI_Wtime();			/* Clock snapshot */
+    t0 = MPI_Wtime();           /* Clock snapshot */
 
     for (target = 0; target < n_io_concentrators; target++) {
         int64_t msg[3] = { 0, };
@@ -1682,11 +1784,64 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         ackreq[ioc] = MPI_REQUEST_NULL;
 
         if (ioc_write_datasize[ioc] == 0) {
+            skipped_writes++;
             continue;
         }
 
-        active_sends++;
+		sourceOffset = source_data_offset[ioc];
 
+        if (sf_enable_directIO && (subfile_fd[ioc] == 0)) {
+            char *subfile_path = get_ioc_subfile_path(ioc, n_io_concentrators, sf_context);
+            if (subfile_path != NULL) {
+                subfile_fd[ioc] = open(subfile_path, O_RDWR /* | O_DSYNC */ );
+                if (subfile_fd[ioc] < 0) {
+                    perror("opening subfile failed\n");
+                }
+                else {
+                    if (ioc_write_type[ioc] == MPI_BYTE) {
+						printf("[%d] Write ioc(%d): MPI_BYTE elements = %lld, sourceOffset = %lld, foffset = %lld\n",
+							   sf_world_rank, ioc, elements, sourceOffset, ioc_write_offset[ioc]);
+
+                        errors += sf_write_data(subfile_fd[ioc], ioc_write_offset[ioc],
+                                                &sourceData[sourceOffset], ioc_write_datasize[ioc], ioc);
+                        printf("");
+                    }
+                    else {      /* This data is larger than a single stripe */
+                        char *contig_buffer = NULL;
+                        int type_size = 0;
+                        int position = 0;
+                        int outsize = (int)ioc_write_datasize[ioc];
+                        contig_buffer = (char *)HDmalloc(outsize);
+                        assert(contig_buffer != NULL);
+                        MPI_Type_size(ioc_write_type[ioc], &type_size);
+						printf("[%d] Write ioc(%d): type_size = %d, outsize = %d elements = %lld\n",
+							   sf_world_rank, ioc, type_size, outsize, elements);
+                        if (MPI_Pack(data, 1, ioc_write_type[ioc], contig_buffer,
+                            outsize, &position, MPI_COMM_SELF) == MPI_SUCCESS) {
+                            ioc_write_type[ioc] = (int64_t) outsize;
+                            errors += sf_write_data(subfile_fd[ioc], ioc_write_offset[ioc],
+                                      contig_buffer, ioc_write_datasize[ioc], ioc);
+                        }
+                        else {
+                            puts("MPI_Pack failure!");
+                            errors++;
+                        }
+                        if (contig_buffer)
+                            HDfree(contig_buffer);
+                    }
+
+                    if (close(subfile_fd[ioc]) < 0) {
+                        perror("closing subfile failed");
+                    }
+                    subfile_fd[ioc] = 0;
+
+                    if (errors == 0) {
+                        direct_writes++;
+                        continue;
+                    }
+                }
+            }
+        }
 #ifndef NDEBUG
         if (sf_verbose_flag && (client_log != NULL)) {
             fprintf(client_log,
@@ -1697,6 +1852,9 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             fflush(client_log);
         }
 #endif
+
+        active_sends++;
+
         /*
          * Send the Message HEADER which indicates the requested IO operation
          * (via the message TAG) along with the data size and file offset.
@@ -1722,18 +1880,18 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
          * an ACK (or NACK) message from the IOC to allow us to proceed.
          */
         status = MPI_Irecv(&acks[ioc], 1, MPI_INT, io_concentrator[ioc],
-						   WRITE_INDEP_ACK, sf_context->sf_data_comm, &ackreq[ioc]);
+                           WRITE_INDEP_ACK, sf_context->sf_data_comm, &ackreq[ioc]);
 
-		if (status != MPI_SUCCESS) {
-			printf("[%d %s] MPI_Irecv failed\n", sf_world_rank, __func__);
-			fflush(stdout);
-		}
-	}
+        if (status != MPI_SUCCESS) {
+            printf("[%d %s] MPI_Irecv failed\n", sf_world_rank, __func__);
+            fflush(stdout);
+        }
+    }
 
-	n_waiting = active_sends;
+    n_waiting = active_sends;
 
-	while (n_waiting) {
-		int ready = 0;
+    while (n_waiting) {
+        int ready = 0;
         status = MPI_Testsome(n_io_concentrators, ackreq, &ready, indices, stats);
         if (status != MPI_SUCCESS) {
             int  len = MPI_MAX_ERROR_STRING;
@@ -1749,9 +1907,9 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             usleep(delay);
         }
 
-		for (i=0; i < ready; i++) {
+        for (i=0; i < ready; i++) {
             int use_bytes = 1;
-			int from = indices[i];
+            int from = indices[i];
             sourceOffset = source_data_offset[from];
             if (ackreq[from] > 0) {
                 if (ioc_write_type[from] == MPI_BYTE) {
@@ -1760,17 +1918,17 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                         MPI_BYTE, io_concentrator[from], WRITE_INDEP_DATA,
                         sf_context->sf_data_comm, &reqs[from]);
                 } else {
-					use_bytes = 0;
+                    use_bytes = 0;
                     status = MPI_Issend(&sourceData[sourceOffset], 1,
                         ioc_write_type[from], io_concentrator[from],
                         WRITE_INDEP_DATA, sf_context->sf_data_comm, &reqs[from]);
                 }
             }
-			else {
+            else {
                 errors++;
                 puts("ACK error!");
                 fflush(stdout);
-			}
+            }
 #ifndef NDEBUG
             if (sf_verbose_flag && (client_log != NULL)) {
                 fprintf(client_log, "[%d] received ack(%d) from ioc(%d)\n",
@@ -1781,30 +1939,30 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             /* Check the status of our MPI_Isend... */
             if (status != MPI_SUCCESS) {
                 int debug_wait=1;
-				int  len = MPI_MAX_ERROR_STRING;
-				char estring[MPI_MAX_ERROR_STRING];
-				MPI_Error_string(status, estring, &len);
-				printf("[%d %s] MPI_ERROR! MPI_Isend returned an error(%s)\n",
-					   sf_world_rank, __func__, estring);
-				fflush(stdout);
+                int  len = MPI_MAX_ERROR_STRING;
+                char estring[MPI_MAX_ERROR_STRING];
+                MPI_Error_string(status, estring, &len);
+                printf("[%d %s] MPI_ERROR! MPI_Isend returned an error(%s)\n",
+                       sf_world_rank, __func__, estring);
+                fflush(stdout);
 
                 errors++;
             }
-			n_waiting--;
+            n_waiting--;
         }
-	}
+    }
 
 #ifndef NDEBUG
     t1 = MPI_Wtime();
     if (sf_verbose_flag && (client_log != NULL)) {
         fprintf(client_log, "[%d %s] time awaiting ACKs: %lf seconds)\n",
-				sf_world_rank, __func__, (t1 - t0));
+                sf_world_rank, __func__, (t1 - t0));
     }
 #endif
 
 
     /* Reset n_waiting from waiting on ACKS to waiting on the data Isends */
-	n_waiting = active_sends;
+    n_waiting = active_sends;
 
     while (n_waiting) {
         int ready = 0;
@@ -1821,7 +1979,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 
         if (ready == 0) {
             usleep(delay);
-		}
+        }
 
         for (i = 0; i < ready; i++) {
             /* One of the Issend calls has completed
@@ -1839,12 +1997,18 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 #ifndef NDEBUG
     t2 = MPI_Wtime();
     if (sf_verbose_flag && (client_log != NULL)) {
-        fprintf(client_log, "[%d %s] sending data = %lf seconds of total_time = %lf\n",
+        if (active_sends > 0) {
+            fprintf(client_log, "[%d %s] sending data = %lf seconds of total_time = %lf\n",
                 sf_world_rank, __func__, (t2 - t1), (t2 - t0));
+        }
+        else {
+            fprintf(client_log, "[%d %s] direct_writes(%d) of data = %lf seconds of total_time = %lf; skipped_writes(%d)\n",
+                    sf_world_rank, __func__, direct_writes, (t2 - t1), (t2 - t0), skipped_writes);
+        }
     }
 #endif
 
-	if (active_sends > 1) {
+    if (active_sends > 1) {
 #ifndef NDEBUG
        if (sf_verbose_flag && (client_log != NULL)) {
           fprintf(client_log,
@@ -1853,8 +2017,8 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
           fflush(client_log);
        }
 #endif
-	}
-
+    }
+done:
     if (errors)
         return -1;
     return status;
@@ -1985,34 +2149,43 @@ close__subfiles( subfiling_context_t *sf_context, int n_io_concentrators, hid_t 
     int         ioc_acks[n_io_concentrators];
     MPI_Request reqs[n_io_concentrators];
     int *       io_concentrator = sf_context->topology->io_concentrator;
-    double      t0, t1;
+    double      t0, t1, t2, t_main_exit, t_finalize_threads;
     /* The map from fid to context can now be cleared */
     clear_fid_map_entry(fid);
     t0 = MPI_Wtime();
 
     /* Shutdown the main IOC thread */
-    atomic_store(&sf_shutdown_flag, 1);
+    sf_shutdown_flag = 1;
 
     /* Allow ioc_main to exit.*/
     usleep(20);
 
     if (sf_context->topology->rank_is_ioc) {
         if ((subfile_fid = sf_context->sf_fid) > 0) {
+#if 0
             if (fdatasync(subfile_fid) < 0)
                 errors++;
+#endif
             if (close(subfile_fid) < 0)
                 errors++;
         }
+        t1 = MPI_Wtime();
         wait_for_thread_main();
+        t2 = MPI_Wtime();
+        t1 = t2;
+        t_main_exit = t2-t1;
         finalize_ioc_threads();
-
+        t2 = MPI_Wtime();
+        t_finalize_threads = t2-t1;
 #ifndef NDEBUG
         if (sf_verbose_flag) {
-            t1 = MPI_Wtime();
+            t1 = t2;
             if (sf_logfile != NULL) {
+              fprintf(sf_logfile, "[%d] main_exit=%lf, finalize_threads=%lf\n",
+                      sf_context->sf_group_rank, t_main_exit, t_finalize_threads);
               if (sf_write_ops)
                 fprintf(sf_logfile, "[%d] pwrite perf: wrt_ops=%d wait=%lf pwrite=%lf IOC_shutdown = %lf seconds\n",
-                   sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time, (t1 - t0));
+                        sf_context->sf_group_rank, sf_write_ops, sf_write_wait_time, sf_pwrite_time, (t1 - t0));
               if (sf_read_ops)
                 fprintf(sf_logfile, "[%d] pread perf: read_ops=%d wait=%lf pread=%lf IOC_shutdown = %lf seconds\n",
                    sf_context->sf_group_rank, sf_read_ops, sf_read_wait_time, sf_pread_time, (t1 - t0));
@@ -2068,7 +2241,6 @@ sf_close_subfiles(hid_t fid)
 int
 sf_shutdown_local_ioc(hid_t fid)
 {
-
     int errors = 0;
     hid_t context_id = fid_map_to_context(fid);
     subfiling_context_t *sf_context = get_subfiling_object(context_id);
@@ -2076,13 +2248,16 @@ sf_shutdown_local_ioc(hid_t fid)
     if (sf_context->topology->rank_is_ioc) {
         int any_busy = get_ioc_work_pending(sf_context);
         int subfile_fid = sf_context->sf_fid;
-        atomic_store(&sf_shutdown_flag,1);
+        // atomic_store(&sf_shutdown_flag,1);
+        sf_shutdown_flag = 1;
+#if 0
         if (subfile_fid > 0) {
             if (fdatasync(subfile_fid) < 0)
                 errors++;
             if (close(subfile_fid) < 0)
                 errors++;
         }
+#endif
     }
     return 0;
 }
@@ -2364,7 +2539,7 @@ ioc_main(int64_t context_id)
     sf_work_request_t *  incoming_requests = NULL;
     useconds_t           delay = 20;
     subfiling_context_t *context = get_subfiling_object(context_id);
-	double               queue_start_time;
+    double               queue_start_time;
 
     assert(context != NULL);
     /* We can't have opened any files at this point.. */
@@ -2393,7 +2568,7 @@ ioc_main(int64_t context_id)
     atomic_init(&sf_file_refcount, 0);
     atomic_init(&sf_ioc_fini_refcount, 0);
     atomic_init(&sf_ioc_ready, 1);
-	shutdown_requested = 0;
+    shutdown_requested = 0;
 
     while (!shutdown_requested || sf_work_pending) {
         flag = 0;
@@ -2415,13 +2590,13 @@ ioc_main(int64_t context_id)
                 ret = MPI_Recv(&incoming_requests[sf_workinprogress], count,
                     MPI_BYTE, source, tag, context->sf_msg_comm, &msg_status);
             }
-			queue_start_time = MPI_Wtime();
+            queue_start_time = MPI_Wtime();
             if (ret == MPI_SUCCESS) {
                 if (msg) {
                     msg->source = source;
                     msg->subfile_rank = subfile_rank;
                     msg->context_id = context->sf_context_id;
-					msg->start_time = queue_start_time;
+                    msg->start_time = queue_start_time;
                     tpool_add_work(msg);
                 } else {
                     int index = atomic_load(&sf_workinprogress);
@@ -2440,7 +2615,8 @@ ioc_main(int64_t context_id)
         } else {
             usleep(delay);
         }
-		shutdown_requested = atomic_load(&sf_shutdown_flag);
+        // shutdown_requested = atomic_load(&sf_shutdown_flag);
+        shutdown_requested = sf_shutdown_flag;
     }
 
     if (incoming_requests) {
@@ -2448,7 +2624,8 @@ ioc_main(int64_t context_id)
     }
 
     /* Reset the shutdown flag */
-    atomic_init(&sf_shutdown_flag, 0);;
+    // atomic_init(&sf_shutdown_flag, 0);;
+    sf_shutdown_flag = 0;
 
     return 0;
 }
@@ -2591,7 +2768,7 @@ queue_write_indep(
     sf_write_ops++;
 
     t_start = MPI_Wtime();
-	t_queue_delay = t_start - msg->start_time;
+    t_queue_delay = t_start - msg->start_time;
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
@@ -2661,7 +2838,7 @@ queue_write_indep(
         sf_pwrite_time += t_write;
     }
 
-	sf_queue_delay_time += t_queue_delay;
+    sf_queue_delay_time += t_queue_delay;
 
     /* Done... */
     if (recv_buffer) {
@@ -2712,7 +2889,7 @@ queue_read_indep(
     sf_read_ops++;
 
     t_start = MPI_Wtime();
-	t_queue_delay = t_start - msg->start_time;
+    t_queue_delay = t_start - msg->start_time;
 
     fd = sf_context->sf_fid;
     if (fd < 0) {
@@ -2724,10 +2901,12 @@ queue_read_indep(
     /* If there were writes to this file, we should flush the file cache
      * before attempting to read the contents.
      */
+#if 0
     if (sf_context->sf_write_count != prev_sf_write_count) {
         prev_sf_write_count = sf_context->sf_write_count;
         fdatasync(fd);
     }
+#endif
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
@@ -2765,7 +2944,7 @@ queue_read_indep(
     t_end = MPI_Wtime();
     t_read = t_end - t_start;
     sf_pread_time += t_read;
-	sf_queue_delay_time += t_queue_delay;
+    sf_queue_delay_time += t_queue_delay;
 
 #ifndef NDEBUG
     if (sf_verbose_flag) {
@@ -2916,6 +3095,7 @@ subfiling_close_file(int subfile_rank, int *fid, MPI_Comm comm)
     int errors = 0;
     int subfile_fid = *fid;
 
+#if 0
     if (subfile_fid >= 0) {
         if (fdatasync(subfile_fid) < 0) {
             perror("fdatasync");
@@ -2923,7 +3103,7 @@ subfiling_close_file(int subfile_rank, int *fid, MPI_Comm comm)
             errors++;
         }
     }
-
+#endif
     errors += subfiling_shutdown(subfile_rank, fid, comm);
 
     if (errors) {
@@ -2963,6 +3143,7 @@ subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
     int ret,  source = 0;
     int subfile_fid = *fid;
     int errors = 0, flag = COMPLETED;
+    printf("entered %s\n", __func__);
     if (subfile_fid >= 0) {
         if (close(subfile_fid) < 0) {
             perror("subfiling_close_file");
@@ -2973,7 +3154,8 @@ subfiling_shutdown(int subfile_rank, int *fid, MPI_Comm comm)
     }
 
     /* Shutdown the main IOC thread */
-    atomic_store(&sf_shutdown_flag, 1);
+    // atomic_store(&sf_shutdown_flag, 1);
+    sf_shutdown_flag = 1;
 
     /* Allow ioc_main to exit.*/
     usleep(20);
@@ -3054,6 +3236,10 @@ subfiling_open_file(
 {
     int errors = 0;
     int subfile_fid = -1;
+    char filepath[PATH_MAX];
+
+    char *prefix = NULL;
+    char *subfile_dir = NULL;
 
     double t_start=0.0, t_end=0.0;
     /* Only the real IOCs open the subfiles
@@ -3063,7 +3249,6 @@ subfiling_open_file(
 
     t_start = MPI_Wtime();
     if (subfile_rank >= 0) {
-        char                 filepath[PATH_MAX];
         char                 config[PATH_MAX];
         int64_t              h5_file_id = msg->header[1];
         int64_t              file_context_id = msg->header[2];
@@ -3075,20 +3260,18 @@ subfiling_open_file(
         if (sf_context->sf_fid < 0) {
             int  n_io_concentrators = sf_context->topology->n_io_concentrators;
             int *io_concentrator = sf_context->topology->io_concentrator;
-            char *prefix = NULL;
-            char *subfile_dir = NULL;
             const char *dotconfig = ".subfile_config";
             mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
             if ((prefix = sf_context->subfile_prefix)) {
                 mkdir(prefix, S_IRWXU);
-                sprintf(filepath, "%s/%ld_node_local_temp_%d_of_%d", prefix,
+                sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, prefix,
                     h5_file_id, subfile_rank, n_io_concentrators);
             } else {
               strcpy(filepath,sf_context->filename);
               subfile_dir = strrchr(filepath, '/');
               assert(subfile_dir);
-              sprintf(subfile_dir, "/%ld_node_local_temp_%d_of_%d", h5_file_id,
+              sprintf(subfile_dir+1, SF_FILENAME_TEMPLATE, h5_file_id,
                       subfile_rank, n_io_concentrators);
             }
             if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
@@ -3119,11 +3302,9 @@ subfiling_open_file(
                 if (f != NULL) {
                     int k;
                     char linebuf[PATH_MAX];
-                    sprintf(
-                        linebuf, "stripe_size=%ld\n", sf_context->sf_stripe_size);
+                    sprintf( linebuf, "stripe_size=%ld\n", sf_context->sf_stripe_size);
                     fwrite(linebuf, strlen(linebuf), 1, f);
-                    sprintf(
-                        linebuf, "aggregator_count=%d\n", n_io_concentrators);
+                    sprintf(linebuf, "aggregator_count=%d\n", n_io_concentrators);
                     fwrite(linebuf, strlen(linebuf), 1, f);
                     sprintf(linebuf,"hdf5_file=%s\n", sf_context->filename);
                     fwrite(linebuf, strlen(linebuf), 1, f);
