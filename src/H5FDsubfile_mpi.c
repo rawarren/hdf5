@@ -1799,12 +1799,10 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                 }
                 else {
                     if (ioc_write_type[ioc] == MPI_BYTE) {
-						printf("[%d] Write ioc(%d): MPI_BYTE elements = %lld, sourceOffset = %lld, foffset = %lld\n",
-							   sf_world_rank, ioc, elements, sourceOffset, ioc_write_offset[ioc]);
-
+                        // printf("[%d] Write ioc(%d): MPI_BYTE elements = %lld, sourceOffset = %lld, foffset = %lld\n",
+                        // sf_world_rank, ioc, elements, sourceOffset, ioc_write_offset[ioc]);
                         errors += sf_write_data(subfile_fd[ioc], ioc_write_offset[ioc],
                                                 &sourceData[sourceOffset], ioc_write_datasize[ioc], ioc);
-                        printf("");
                     }
                     else {      /* This data is larger than a single stripe */
                         char *contig_buffer = NULL;
@@ -1814,8 +1812,8 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                         contig_buffer = (char *)HDmalloc(outsize);
                         assert(contig_buffer != NULL);
                         MPI_Type_size(ioc_write_type[ioc], &type_size);
-						printf("[%d] Write ioc(%d): type_size = %d, outsize = %d elements = %lld\n",
-							   sf_world_rank, ioc, type_size, outsize, elements);
+                        // printf("[%d] Write ioc(%d): type_size = %d, outsize = %d elements = %lld\n",
+                        // sf_world_rank, ioc, type_size, outsize, elements);
                         if (MPI_Pack(data, 1, ioc_write_type[ioc], contig_buffer,
                             outsize, &position, MPI_COMM_SELF) == MPI_SUCCESS) {
                             ioc_write_type[ioc] = (int64_t) outsize;
