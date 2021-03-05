@@ -1432,9 +1432,6 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                 }
                 else {
                     if (ioc_read_type[ioc] == MPI_BYTE) {
-                        // printf("[%d] Read ioc(%d): MPI_BYTE elements = %lld, sourceOffset = %lld, foffset = %lld\n",
-                        //        sf_world_rank, ioc, elements, sourceOffset, ioc_read_offset[ioc]);
-
                         errors += sf_read_data(subfile_fd[ioc], ioc_read_offset[ioc], &sourceData[sourceOffset], ioc_read_datasize[ioc], ioc);
                     }
                     else {
@@ -1444,8 +1441,6 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                         int datasize = (int)ioc_read_datasize[ioc];
                         contig_buffer = (char *)HDmalloc(datasize);
                         assert(contig_buffer != NULL);
-                        MPI_Type_size(ioc_read_type[ioc], &type_size);
-                        // printf("[%d] Read type_size = %d elements = %lld\n", sf_world_rank, type_size);
                         errors += sf_read_data(subfile_fd[ioc], ioc_read_offset[ioc], contig_buffer, ioc_read_datasize[ioc], ioc);
                         if (MPI_Unpack(contig_buffer, datasize, &position, &sourceData[sourceOffset],
                                        1, ioc_read_type[ioc], MPI_COMM_SELF) != MPI_SUCCESS) {
@@ -1487,7 +1482,10 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             printf("[%d] MPI_Send failure!", sf_world_rank);
             return status;
         } else {
-
+            /* FIXME: We should be checking that we don't exceed
+             * the 2GB size limit. This could probably be part
+             * of the vector construction rather than validating here.
+             */
             if (ioc_read_type[ioc] == MPI_BYTE) {
                 int bytes = (int) ioc_read_datasize[ioc];
                 status = MPI_Irecv(&sourceData[sourceOffset], bytes,
@@ -1912,12 +1910,12 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
             if (ackreq[from] > 0) {
                 if (ioc_write_type[from] == MPI_BYTE) {
                     int datasize = (int) (ioc_write_datasize[from] & INT32_MASK);
-                    status = MPI_Issend(&sourceData[sourceOffset], datasize,
+                    status = MPI_Isend(&sourceData[sourceOffset], datasize,
                         MPI_BYTE, io_concentrator[from], WRITE_INDEP_DATA,
                         sf_context->sf_data_comm, &reqs[from]);
                 } else {
                     use_bytes = 0;
-                    status = MPI_Issend(&sourceData[sourceOffset], 1,
+                    status = MPI_Isend(&sourceData[sourceOffset], 1,
                         ioc_write_type[from], io_concentrator[from],
                         WRITE_INDEP_DATA, sf_context->sf_data_comm, &reqs[from]);
                 }
@@ -2403,7 +2401,7 @@ sf_open_subfiles(hid_t fid, char *filename, char *file_directory, int flags)
         sf_context->filename = strdup(filepath);
     }
 
-    atomic_init(&sf_shutdown_flag,0);
+    sf_shutdown_flag = 0;
 
     return open__subfiles(sf_context, sf_context->topology->n_io_concentrators,
         fid, flags);
@@ -2907,12 +2905,10 @@ queue_read_indep(
 #endif
 
 #ifndef NDEBUG
-    if (sf_verbose_flag) {
-        if (sf_logfile) {
-            fprintf(sf_logfile,
-                "[ioc(%d) %s] msg from %d: datasize=%ld\toffset=%ld\n",
-                subfile_rank, __func__, source, data_size, file_offset);
-        }
+    if (sf_verbose_flag && (sf_logfile != NULL)) {
+        fprintf(sf_logfile,
+                "[ioc(%d) %s] msg from %d: datasize=%ld\toffset=%ld queue_delay=%lf seconds\n",
+                subfile_rank, __func__, source, data_size, file_offset, t_queue_delay);
     }
 #endif
     if ((send_buffer = (char *) malloc((size_t) data_size)) == NULL) {
@@ -2945,11 +2941,9 @@ queue_read_indep(
     sf_queue_delay_time += t_queue_delay;
 
 #ifndef NDEBUG
-    if (sf_verbose_flag) {
-        if (sf_logfile) {
-            fprintf(sf_logfile, "[ioc(%d)] MPI_Send to source(%d) completed\n",
+    if (sf_verbose_flag && (sf_logfile != NULL)) {
+        fprintf(sf_logfile, "[ioc(%d)] MPI_Send to source(%d) completed\n",
                 subfile_rank, source);
-        }
     }
 #endif
 
