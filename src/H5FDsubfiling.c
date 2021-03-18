@@ -1535,6 +1535,8 @@ herr_t create_vector_from_hyperslab( hid_t file_space_id, void *memDataBuf, hadd
     herr_t ret_value = SUCCEED;
 	hssize_t k, n_blocks = H5Sget_select_hyper_nblocks(file_space_id);
 
+    // USE THIS (when we get around to using calling here).
+	// htri_t check = H5Sget_regular_hyperslab(file_space_id,)
 	void *nextBuf = memDataBuf;
 
 	hsize_t stride[H5S_MAX_RANK];
@@ -1752,6 +1754,21 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 			}
 			if (status > 0) {
 				hssize_t previous_vlen = sf_vlen;
+                if (sf_offsets == NULL)
+                    sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
+                if (sf_sizes == NULL)
+                    sf_sizes = (hsize_t *)malloc(sizeof(hsize_t));
+                if (sf_bufs == NULL)
+                    sf_bufs = (void **)malloc(sizeof(void *));
+                sf_vlen = 1;
+                assert(sf_offsets);
+                assert(sf_sizes);
+                assert(sf_bufs);
+
+                sf_offsets[0] = rank_baseAddr;
+                sf_sizes[0] = num_elem_mem * dtype_extent;
+                sf_bufs[0] = buf;
+#if 0
 				if ((mem_space->extent.rank == 1)) {
 					if (sf_offsets == NULL)
 						sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
@@ -1774,10 +1791,11 @@ H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_
 					ret_value = -1;
 					goto done;
 				}
+#endif
 				ret_value = sf_write_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
-			}
+            }
 			break;
-		}
+	    }
 		case H5S_SEL_ALL:
 		{
 			int status;
@@ -1869,6 +1887,21 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 			}
 			if (status > 0) {
 				hssize_t previous_vlen = sf_vlen;
+                if (sf_offsets == NULL)
+                    sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
+                if (sf_sizes == NULL)
+                    sf_sizes = (hsize_t *)malloc(sizeof(hsize_t));
+                if (sf_bufs == NULL)
+                    sf_bufs = (void **)malloc(sizeof(void *));
+                sf_vlen = 1;
+                assert(sf_offsets);
+                assert(sf_sizes);
+                assert(sf_bufs);
+
+                sf_offsets[0] = rank_baseAddr;
+                sf_sizes[0] = num_elem_mem * dtype_extent;
+                sf_bufs[0] = buf;
+#if 0
 				if (mem_space->extent.rank == 1) {
 					if (sf_offsets == NULL)
 						sf_offsets = (haddr_t *)malloc(sizeof(haddr_t));
@@ -1891,6 +1924,7 @@ H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t
 					ret_value = -1;
 					goto done;
 				}
+#endif
 				ret_value = sf_read_vector(h5_file_id, sf_vlen, sf_offsets, sf_sizes, sf_bufs);
 			}
 			break;
