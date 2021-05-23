@@ -250,6 +250,11 @@ set(mirror_vfd_SOURCES
     ${HDF5_TEST_SOURCE_DIR}/genall5.c
 )
 
+set(subfiling_vfd_SOURCES
+    ${HDF5_TEST_SOURCE_DIR}/subfiling_vfd.c
+    ${HDF5_TEST_SOURCE_DIR}/genall5.c
+)
+
 set (ttsafe_SOURCES
     ${HDF5_TEST_SOURCE_DIR}/ttsafe.h
     ${HDF5_TEST_SOURCE_DIR}/ttsafe.c
@@ -513,6 +518,18 @@ set_target_properties (thread_id PROPERTIES FOLDER test)
 if (HDF5_ENABLE_FORMATTERS)
   clang_format (HDF5_TEST_thread_id_FORMAT thread_id)
 endif ()
+
+#-- Adding test for subfiling_vfd
+add_executable (subfiling_vfd ${subfiling_vfd_SOURCES})
+target_include_directories (subfiling_vfd PRIVATE "${HDF5_SRC_DIR};${HDF5_BINARY_DIR};$<$<BOOL:${HDF5_ENABLE_PARALLEL}>:${MPI_C_INCLUDE_DIRS}>")
+if (NOT BUILD_SHARED_LIBS)
+  TARGET_C_PROPERTIES (subfiling_vfd STATIC)
+  target_link_libraries (subfiling_vfd PRIVATE ${HDF5_TEST_LIB_TARGET})
+else ()
+  TARGET_C_PROPERTIES (subfiling_vfd SHARED)
+  target_link_libraries (subfiling_vfd PRIVATE ${HDF5_TEST_LIBSH_TARGET})
+endif ()
+set_target_properties (subfiling_vfd PROPERTIES FOLDER test)
 
 #-- Adding test for mirror_vfd
 add_executable (mirror_vfd ${mirror_vfd_SOURCES})

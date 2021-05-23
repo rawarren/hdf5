@@ -217,6 +217,14 @@ if (H5FD_ENABLE_MIRROR_VFD)
   endif()
 endif()
 
+# ----------------------------------------------------------------------
+# Check whether we can build the Subfiling VFD
+# ----------------------------------------------------------------------
+option (HDF5_ENABLE_SUBFILING_VFD "Build the Subfiling Virtual File Driver" ON)
+if (HDF5_ENABLE_SUBFILING_VFD)
+  set (${HDF_PREFIX}_HAVE_SUBFILING_VFD 1)
+endif()
+
 #-----------------------------------------------------------------------------
 # Check if C has __float128 extension
 #-----------------------------------------------------------------------------

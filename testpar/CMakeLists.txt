@@ -87,6 +87,7 @@ set (H5P_TESTS
     t_prestart
     t_init_term
     t_shapesame
+    t_subfiling_vfd
     t_filters_parallel
     t_2Gio
 )

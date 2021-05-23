@@ -273,6 +273,9 @@
 /* Define if we can build the Mirror VFD */
 #cmakedefine H5_HAVE_MIRROR_VFD @H5_HAVE_MIRROR_VFD@
 
+/* Define if we can build the Subfiling VFD */
+#cmakedefine H5_HAVE_SUBFILING_VFD @H5_HAVE_SUBFILING_VFD@
+
 /* Define if we have MPE support */
 #cmakedefine H5_HAVE_MPE @H5_HAVE_MPE@
 
