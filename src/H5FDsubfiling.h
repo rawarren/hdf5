@@ -168,8 +168,33 @@ H5_DLL herr_t H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_ba
 											hid_t file_space_id, hid_t plist_id, void *buf);
 
 H5_DLL char * get_ioc_selection_criteria(ioc_selection_t *);
+H5_DLL void * get__subfiling_object(int64_t object_id);
+H5_DLL hid_t fid_map_to_context(hid_t h5_fid);
 
-H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int flags);
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
+H5_DLL int init__indep_io(void *_sf_context, int64_t *sf_source_data_offset, int64_t *sf_datasize,
+						  int64_t *sf_offset, MPI_Datatype *sf_dtype, int64_t offset,
+						  int64_t elements, int dtype_extent);
+#else
+/* return arguments are vector of vectors - function return is the length (depth) of the sub vectors.
+ * Note that we don't need to include the MPI_Datatype return argument!
+ */
+#if 1
+H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
+						  int64_t *sf_source_data_offset,
+						  int64_t *sf_datasize,
+						  int64_t *f_offset,
+						  int64_t offset, int64_t elements, int dtype_extent);
+#else
+H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
+						  int64_t sf_source_data_offset[depth][ioc_total],
+						  int64_t sf_datasize[depth][ioc_total],
+						  int64_t sf_offset[depth][ioc_total],
+						  int64_t offset, int64_t elements, int dtype_extent);
+#endif
+#endif
+
+H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int fd, int flags);
 H5_DLL int H5FD__close_subfiles(hid_t context_id);
 H5_DLL int H5FD__read_independent(hid_t H5FD__fid, int64_t offset, int64_t elements, int dtype_extent, void *data);
 H5_DLL int H5FD__write_independent(hid_t H5FD__fid, int64_t offset, int64_t elements, int dtype_extent, const void *data);
@@ -178,6 +203,8 @@ H5_DLL herr_t H5FD__write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, h
 H5_DLL int H5FD__truncate(hid_t h5_fid, haddr_t addr);
 H5_DLL int H5FD__shutdown_local_ioc(hid_t fid);
 H5_DLL void manage_client_logfile(int client_rank, int flag_value);
+H5_DLL int initialize_ioc_threads(void *sf_context);
+
 
 #ifdef __cplusplus
 }

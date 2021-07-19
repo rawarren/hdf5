@@ -33,7 +33,7 @@
 #include "H5FDsubfiling.h"    /* Private header for the subfiling VFD */
 #include "H5FDioc.h"
 
-#define BIG_DATABUFFER_SIZE 4096
+#define BIG_DATABUFFER_SIZE 33554432
 #define DATABUFFER_SIZE 128
 #define DSET_NAME_LEN   16
 
@@ -54,6 +54,9 @@
  */
 #define DEFAULT_VERBOSITY 1
 static unsigned int g_verbosity = DEFAULT_VERBOSITY;
+
+int g_mpi_size = -1;
+int g_mpi_rank = -1;
 
 /* Macro for selective debug printing / logging */
 #define LOGPRINT(lvl, ...)                  \
@@ -1390,6 +1393,7 @@ test_create_and_close(void)
     if (H5Fclose(file_id) == FAIL) {
         TEST_ERROR;
     }
+
     if (fapl_id != H5P_DEFAULT && fapl_id >= 0) {
         if (H5Pclose(fapl_id) == FAIL) {
             TEST_ERROR;
@@ -1972,16 +1976,16 @@ error:
 /* ---------------------------------------------------------------------------
  * Function:    test_basic_dataset_write
  *
- * Purpose:     Create and close files; repoen files and write a dataset,
+ * Purpose:     Create and close files; reopen files and write a dataset,
  *              close; compare files.
- *
- *              TODO: receive target IP from caller?
  *
  * Return:      Success: 0
  *              Failure: -1
  *
  * Programmer:  Jacob Smith
  *              2019
+ *              Richard Warren - modified the original for subfiling testing
+ *              2021
  * ---------------------------------------------------------------------------
  */
 static int
@@ -1996,15 +2000,36 @@ test_basic_dataset_write(void)
     hid_t       dset_id = H5I_INVALID_HID;
     hid_t       dspace_id = H5I_INVALID_HID;
     hid_t       dtype_id = H5T_NATIVE_INT;
-    hsize_t     dims[2] = { BIG_DATABUFFER_SIZE, BIG_DATABUFFER_SIZE };
+
+    hid_t       file_dataspace; /* File dataspace ID */
+    hid_t       mem_dataspace;  /* memory dataspace ID */
+
+    hsize_t     block[2], dims[2], stride[2];
+	hsize_t     count[2] = {1 , 1};
+    hsize_t     start[2] = {0 , 0};
+
     int        *check = NULL;
     int        *buf = NULL;
+    int        *data_ptr = NULL;
 
-    int         buf_size  = BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE;
+    int         buf_size  = BIG_DATABUFFER_SIZE;
     int         i = 0;
     int         j = 0;
     int         k = 0;
     int         ret_value = 0; /* for error handling */
+
+	dims[0]   = BIG_DATABUFFER_SIZE;
+    dims[1]   = (hsize_t)g_mpi_size;
+    block[0]  = dims[0] / g_mpi_size;
+    block[1]  = dims[1];
+
+    stride[0] = block[0];
+	stride[1] = block[1];
+
+    start[0] = (hsize_t)(g_mpi_rank * block[0]);
+	start[1] = 0;
+    
+    buf_size *= block[0];
 
     TESTING("Subfiling open and dataset writing");
 
@@ -2017,19 +2042,21 @@ test_basic_dataset_write(void)
 
     /* Prepare data to be written
      */
-    check = (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
+    check = (int *)HDmalloc(dims[0] * sizeof(int));
     if (NULL == check) {
         TEST_ERROR;
     }
 
-    buf = (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
+    buf = (int *)HDmalloc(dims[0] * sizeof(int));
     if (NULL == buf) {
         TEST_ERROR;
     }
-    for (i = 0; i < BIG_DATABUFFER_SIZE; i++) {
-        for (j = 0; j < BIG_DATABUFFER_SIZE; j++) {
-            int k = i * BIG_DATABUFFER_SIZE + j;
-            buf[k] = k;
+    data_ptr = buf;
+
+    for (i = 0; i < block[0]; i++) {
+        for (j = 0; j < block[1]; j++) {
+            *data_ptr = (int)((i + start[0]) * 100 + (j + start[1] + 1));
+			data_ptr++;
         }
     }
 
@@ -2064,24 +2091,46 @@ test_basic_dataset_write(void)
         TEST_ERROR;
     }
 
-    if (H5Dwrite(dset_id, dtype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf)
+
+    file_dataspace = H5Dget_space(dset_id);
+    if (H5Sselect_hyperslab(file_dataspace, H5S_SELECT_SET, start, stride, count, block)
+		== FAIL)
+    {
+        TEST_ERROR;
+    }
+
+    /* create a memory dataspace independently */
+    mem_dataspace = H5Screate_simple(2, block, NULL);
+
+    if (H5Dwrite(dset_id, dtype_id, mem_dataspace, file_dataspace, H5P_DEFAULT, buf)
         == FAIL)
     {
         TEST_ERROR;
     }
 
-    if (H5Dread(dset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, check) < 0)
-        TEST_ERROR
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if (H5Dread(dset_id, dtype_id, mem_dataspace, file_dataspace, H5P_DEFAULT, check) < 0) {
+        TEST_ERROR;
+	}
+
+    MPI_Barrier(MPI_COMM_WORLD);
 
     if (H5Dclose(dset_id) == FAIL) {
         TEST_ERROR;
     }
+    MPI_Barrier(MPI_COMM_WORLD);
+
     if (H5Sclose(dspace_id) == FAIL) {
         TEST_ERROR;
     }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
     if (H5Fclose(file_id) == FAIL) {
         TEST_ERROR;
     }
+
 	for(i=0; i < buf_size; i++) {
 		if (buf[i] != check[i])
            TEST_ERROR;
@@ -2704,6 +2753,14 @@ main(int argc, char **argv)
 
 
 	MPI_Init_thread(&argc, &argv, required, &provided);
+    if (provided != required) {
+        HDprintf("MPI doesn't support MPI_Init_thread with MPI_THREAD_MULTIPLE\n");
+        return -1;
+    }
+    else {
+        MPI_Comm_rank(MPI_COMM_WORLD, &g_mpi_rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &g_mpi_size);
+	}
 
     h5_reset();
 

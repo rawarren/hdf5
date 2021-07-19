@@ -26,19 +26,61 @@ static double sf_pread_time = 0.0;
 static double sf_read_wait_time = 0.0;
 static double sf_queue_delay_time = 0.0;
 
+/* The following is our basic template for a subfile filename.
+ * Note that eventually we shouldn't use 0_of_N since we
+ * intend to use the user defined HDF5 filename for a
+ * zeroth subfile as well as for all metadata.
+ */
 #define SF_FILENAME_TEMPLATE "%ld_node_local_temp_%d_of_%d"
 static const char *sf_filename_template = SF_FILENAME_TEMPLATE;
 
 static int *request_count_per_rank = NULL;
 
-
 atomic_int sf_workinprogress = 0;
 atomic_int sf_work_pending = 0;
+atomic_int sf_file_open_count = 0;
 atomic_int sf_file_close_count = 0;
 atomic_int sf_file_refcount = 0;
 atomic_int sf_ioc_fini_refcount = 0;
 atomic_int sf_ioc_ready = 0;
 volatile int sf_shutdown_flag = 0;
+
+/* 
+ * Structure definitions to enable async io completions
+ * We first define a structure which contains the basic
+ * input arguments for the functions which were originally
+ * invoked.  See below.
+ */
+typedef struct _client_io_args {
+    int        ioc;            /* ID of the IO Concentrator handling this IO.   */
+    hid_t      context_id;     /* The context id provided for the read or write */
+    int64_t    offset;         /* The file offset for the IO operation          */
+    int64_t    elements;       /* How many bytes                                */
+    void      *data;           /* A pointer to the (contiguous) data segment    */
+    MPI_Request io_req;        /* An MPI request to allow the code to loop while */
+                               /* making progress on multiple IOs               */
+} io_args_t;
+
+/* pre-define */
+typedef struct _client_io_func io_func_t;
+
+struct _client_io_func {
+    int (*io_function)(void *this_io); /* pointer to a completion function */
+    io_args_t io_args;         /* arguments passed to the completion function   */
+    int pending;               /* The function is complete (0) or pending (1)?  */
+};
+
+typedef struct _io_req {
+    struct _io_req   *prev;    /* A simple list structure containing completion */
+    struct _io_req   *next;    /* functions. These should get removed as IO ops */
+    io_func_t completion_func; /* are completed */
+} io_req_t;
+
+
+int      n_io_pending = 0;
+io_req_t pending_io_requests;
+
+
 
 typedef struct _client_xfer_info {
     int64_t    offset;
@@ -46,6 +88,7 @@ typedef struct _client_xfer_info {
     int        ioc_targets;
     io_op_t    op;
 } client_xfer_info_t;
+
 
 typedef struct _xfer_info {
     int64_t    offset;
@@ -85,19 +128,7 @@ Private functions
 */
 
 static char * get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context);
-
-
-static int
-get_ioc_work_pending(subfiling_context_t *sf_context)
-{
-    int ioc_busy = atomic_load(&sf_work_pending);
-    int any_busy = ioc_busy;
-    if (sf_context->topology->n_io_concentrators > 1) {
-        MPI_Reduce(&ioc_busy, &any_busy, 1, MPI_INT, MPI_SUM, 0, sf_context->sf_group_comm);
-    }
-    return any_busy;
-}
-
+static int async_completion(void *arg);
 
 /* ===================================================================== */
 /* MPI_Datatype Creation functions.
@@ -137,6 +168,7 @@ get_ioc_work_pending(subfiling_context_t *sf_context)
  *
  *-------------------------------------------------------------------------
  */
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
 static MPI_Datatype
 H5FD__create_first_mpi_type(subfiling_context_t *context, int ioc_depth,
     int64_t offset, int64_t target_write_bytes, int64_t first_io)
@@ -210,8 +242,53 @@ H5FD__create_first_mpi_type(subfiling_context_t *context, int ioc_depth,
         }
     }
     return newType;
-}
+} /* end H5FD__create_first_mpi_type() */
+#else
 
+/* Fill the output vectors 'io_offset', 'io_datasize' and 'io_f_offset'
+ * All calculations are in terms of bytes.
+*/
+static void
+H5FD__create_first_mpi_type(subfiling_context_t *context, int ioc_depth,
+                            int64_t src_offset, int64_t target_datasize, int64_t f_offset,
+                            int64_t *io_offset, int64_t *io_datasize, int64_t *io_f_offset,
+                            int64_t first_io)
+{
+    int64_t      stripe_size = context->sf_stripe_size;
+    int64_t      blocksize_per_stripe = context->sf_blocksize_per_stripe;
+    int64_t      offset_in_stripe = f_offset % stripe_size;
+    int64_t      next_offset = blocksize_per_stripe - offset_in_stripe;
+    int64_t      total_bytes = first_io;
+
+    io_offset[0] = src_offset;
+    io_datasize[0] = first_io;
+    io_f_offset[0] = f_offset;
+
+    if (first_io == target_datasize) {
+        return;
+    }
+    if (first_io) {
+        int  k;
+        f_offset += first_io;
+        for (k = 1; k <= ioc_depth; k++) {
+            io_offset[k] = next_offset;
+            io_datasize[k] = stripe_size;
+            io_f_offset[k] = f_offset;
+            f_offset += stripe_size;
+            total_bytes += stripe_size;
+            next_offset += context->sf_blocksize_per_stripe;
+        }
+        if (total_bytes != target_datasize) {
+            printf("Warning (%s): total_SUM(%ld) != target_bytes(%ld)\n",
+                __func__, total_bytes, target_datasize);
+        }
+    }
+    return;
+} /* end H5FD__create_first_mpi_type() */
+
+#endif
+
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
 /*-------------------------------------------------------------------------
  * Function:    H5FD__create_final_mpi_type
  *
@@ -300,7 +377,56 @@ H5FD__create_final_mpi_type(subfiling_context_t *context, int ioc_depth,
     }
     return newType;
 }
+#else  /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
 
+/* Fill the output vectors 'io_offset', 'io_datasize' and 'io_f_offset'
+ * All calculations are in terms of bytes.
+*/
+static void
+H5FD__create_final_mpi_type(subfiling_context_t *context, int ioc_depth,
+                            int64_t src_offset, int64_t target_datasize, int64_t f_offset,
+                            int64_t *io_offset, int64_t *io_datasize, int64_t *io_f_offset,
+                            int64_t last_io)
+{
+    int64_t      stripe_size = context->sf_stripe_size;
+    int64_t      blocksize_per_stripe = context->sf_blocksize_per_stripe;
+    int64_t      offset_in_stripe = f_offset % stripe_size;
+    int64_t      next_offset = src_offset;
+    int64_t      total_bytes = 0;
+    int64_t      overcount = stripe_size - last_io;
+
+    if (last_io == target_datasize) {
+        io_offset[0] = src_offset;
+        io_f_offset[0] = f_offset;
+        io_datasize[0] = last_io;
+        return;
+    }
+
+    if (last_io) {
+        int  k;
+        for (k = 0; k < ioc_depth; k++) {
+            io_offset[k] = next_offset;
+            io_datasize[k] = stripe_size;
+            io_f_offset[k] = f_offset;
+            f_offset += stripe_size;
+            total_bytes += stripe_size;
+            next_offset += context->sf_blocksize_per_stripe;
+        }
+        io_datasize[ioc_depth -1] = last_io;
+        total_bytes -= overcount;
+
+        if (total_bytes != target_datasize) {
+            printf("Warning (%s): total_SUM(%ld) != target_bytes(%ld)\n",
+                __func__, total_bytes, target_datasize);
+        }
+    }
+    return;
+} /* end H5FD__create_final_mpi_type() */
+
+#endif /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
+
+
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
 /*-------------------------------------------------------------------------
  * Function:    H5FD__create_f_l_mpi_type
  *
@@ -406,8 +532,58 @@ H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
         }
     }
     return newType;
-}
+} /* end H5FD__create_f_l_mpi_type() */
 
+#else  /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
+static void
+H5FD__create_f_l_mpi_type(subfiling_context_t *context, int ioc_depth,
+                          int64_t src_offset, int64_t target_datasize, int64_t f_offset,
+                          int64_t *io_offset, int64_t *io_datasize, int64_t *io_f_offset,
+                          int64_t first_io, int64_t last_io )
+{
+    int64_t      stripe_size = context->sf_stripe_size;
+    int64_t      blocksize_per_stripe = context->sf_blocksize_per_stripe;
+    int64_t      offset_in_stripe = f_offset % stripe_size;
+    int64_t      next_offset = src_offset + (blocksize_per_stripe - offset_in_stripe);
+    int64_t      total_bytes = first_io;
+    int          sf_world_rank = context->topology->app_layout->world_rank;
+
+    io_offset[0] = src_offset;
+    io_datasize[0] = first_io;
+    io_f_offset[0] = f_offset;
+
+    if (total_bytes == target_datasize) {
+        return;
+    }
+
+    if (total_bytes) {
+        int  k;
+        f_offset += (blocksize_per_stripe - f_offset);
+        for (k = 1; k < ioc_depth; k++) {
+            io_offset[k] = next_offset;
+            io_datasize[k] = stripe_size;
+            io_f_offset[k] = f_offset;
+            total_bytes += stripe_size;
+            f_offset += context->sf_blocksize_per_stripe;
+            next_offset += context->sf_blocksize_per_stripe;
+        }
+        io_datasize[ioc_depth] = last_io;
+        io_f_offset[ioc_depth] = f_offset;
+        io_offset[ioc_depth] = next_offset;
+
+        total_bytes += last_io;
+
+        if (total_bytes != target_datasize) {
+            printf("[%d] Warning (%s): total_SUM(%ld) != target_bytes(%ld)\n",
+                sf_world_rank, __func__, total_bytes, target_datasize);
+        }
+    }
+    return;
+} /* end H5FD__create_f_l_mpi_type() */
+
+#endif /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
+
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
 /*-------------------------------------------------------------------------
  * Function:    H5FD__create_mpi_uniform_type
  *
@@ -501,9 +677,55 @@ H5FD__create_mpi_uniform_type(
         }
     }
     return newType;
-}
+} /* end H5FD__create_mpi_uniform_type() */
 
+#else  /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
 
+static void
+H5FD__create_mpi_uniform_type(subfiling_context_t *context, int ioc_depth,
+                              int64_t src_offset, int64_t target_datasize, int64_t f_offset,
+                              int64_t *io_offset, int64_t *io_datasize, int64_t *io_f_offset)
+{
+    int64_t      stripe_size = context->sf_stripe_size;
+    int64_t      blocksize_per_stripe = context->sf_blocksize_per_stripe;
+    int64_t      next_offset = src_offset + blocksize_per_stripe;
+    int64_t      total_bytes = 0;
+
+    io_offset[0] = src_offset;
+	
+    io_datasize[0] = stripe_size;
+    io_f_offset[0] = f_offset;
+    if (target_datasize == 0) {
+		io_datasize[0] = 0;
+        return;
+    }
+	else io_datasize[0] = stripe_size;
+    f_offset += blocksize_per_stripe;
+    total_bytes = stripe_size;
+
+    if (target_datasize > stripe_size) {
+        int  k;
+
+        for (k = 1; k < ioc_depth; k++) {
+            io_offset[k] = next_offset;
+            io_datasize[k] = stripe_size;
+            io_f_offset[k] = f_offset;
+            total_bytes += stripe_size;
+            f_offset += blocksize_per_stripe;
+            next_offset += blocksize_per_stripe;
+        }
+
+        if (total_bytes != target_datasize) {
+            printf("Warning (%s): total_SUM(%ld) != target_bytes(%ld)\n",
+                __func__, total_bytes, target_datasize);
+        }
+    }
+    return;
+} /* end H5FD__create_mpi_uniform_type() */
+
+#endif /* #ifdef H5_ALLOW_VFD_DERIVED_TYPES */
+
+#ifdef H5_ALLOW_VFD_DERIVED_TYPES
 /*-------------------------------------------------------------------------
  * Function:    init__indep_io
  *
@@ -531,12 +753,12 @@ H5FD__create_mpi_uniform_type(
  *
  *-------------------------------------------------------------------------
  */
-static int
-init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
+int
+init__indep_io(void *_sf_context, int64_t *sf_source_data_offset,
     int64_t *sf_datasize, int64_t *sf_offset, MPI_Datatype *sf_dtype,
     int64_t offset, int64_t elements, int dtype_extent)
 {
-
+    subfiling_context_t *sf_context = _sf_context;
     int     container_count = sf_context->topology->n_io_concentrators;
     int64_t stripe_size = sf_context->sf_stripe_size;
     int64_t data_size = elements * dtype_extent;
@@ -631,12 +853,242 @@ init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
         printf("Error: total_bytes != data_size\n");
     }
 
-    return 0;
-}
+    return container_count;
+} /* end init__indep_io() */
 
+#else  /* not H5_ALLOW_VFD_DERIVED_TYPES */
+/*-------------------------------------------------------------------------
+ * Function:    init__indep_io
+ *
+ * Purpose:     Utility function to initialize the set of IO transactions
+ *              used to communicate with IO concentrators for read and write
+ *              IO operations.
+ *
+ * Return:      A filled set of vectors.  As a consequence of not allowing
+ *              use of MPI derived datatypes in the VFD layer, we need to
+ *              accomodate the possiblity that large IO transactions will
+ *              be required to use multiple IOs per IOC.  
+ *
+ *              Example: Using 4 IOCs, each with 1M stripe-depth; when
+ *              presented an IO request for 8MB then at a minimum each IOC
+ *              will require 2 IOs of 1MB each.  Depending on the starting
+ *              file offset, the 2 IOs can instead be 3...
+ *              
+ *              To fully describe the IO transactions for read and writes we
+ *              we thus use a return type where each IOC vector element is
+ *              instead a vector itself and has a vector length of which
+ *              corresponds to the max number of IO transactions per IOC.
+ *              In the example above, these vector lengths can be 2 or 3.
+ *              The actual length is determined by the 'container_depth'
+ *              variable.
+ *
+ *              For IO operations which involve a subset of IO concentrators,
+ *              the vector entries for the unused IOCs will have lengths of
+ *              zero and MPI NULL datatypes.  The 'container_depth' in this
+ *              case will always be 1.
+ *
+ * Return value: The vector "depth" or max number of IOs per IOC.
+ *
+ * Errors:      Cannot fail.
+ *
+ * Programmer:  Richard Warren
+ *              7/17/2020
+ *
+ * Changes:     Initial Version/None.
+ *
+ *-------------------------------------------------------------------------
+ */
+#if 1
+int
+init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
+			   int64_t *sf_source_data_offset,
+               int64_t *sf_datasize,
+			   int64_t *sf_offset,
+               int64_t offset, int64_t elements, int dtype_extent)
+#else
+int
+init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
+			   int64_t sf_source_data_offset[maxdepth][ioc_total],
+               int64_t sf_datasize[maxdepth][ioc_total],
+			   int64_t sf_offset[maxdepth][ioc_total],
+               int64_t offset, int64_t elements, int dtype_extent)
+#endif	
+{
+    subfiling_context_t *sf_context = _sf_context;
+    int     container_count = sf_context->topology->n_io_concentrators;
+    int64_t stripe_size = sf_context->sf_stripe_size;
+    int64_t data_size = elements * dtype_extent;
+
+    int64_t start_id = offset / stripe_size;
+    int64_t offset_in_stripe = offset % stripe_size;
+    int64_t start_length = MIN(data_size, (stripe_size - offset_in_stripe));
+    int64_t start_row = start_id / container_count;
+    int64_t ioc_start = start_id % container_count;
+
+    int64_t final_offset = offset + data_size;
+    int64_t final_id = final_offset / stripe_size;
+    int64_t final_length =
+        (start_length == data_size ? 0 : final_offset % stripe_size);
+    int64_t ioc_final = final_id % container_count;
+    int64_t container_bytes = 0, total_bytes = 0;
+    int64_t source_offset = 0;
+
+    int     row_id_start = (int) (start_id - ioc_start);
+    int     row_id_final = (int) (final_id - ioc_final);
+    int     i, k, depth = ((row_id_final - row_id_start) / container_count) + 1;
+    int     container_id = (int) start_id;
+    int64_t row_offset = (int64_t)(start_row * stripe_size);
+
+    /* Given the IO parameters, we loop thru the set of IOCs
+     * to determine the various vector components for each.
+     * Those IOCs whose datasize is zero (0), will not have
+     * IO requests passed to them.
+     */
+    for (i = 0, k = (int) ioc_start; i < container_count; i++) {
+        int index;
+		/* We use 'output_offset' as an index into a linear 
+         * version of a 2D array. In 'C' the last subscript
+         * is the one that varies most rapidly.
+         * In our case, the 2D array is represented as
+         * array[ maxdepth ][ container_count ]
+         */
+        int output_offset = k;	
+        int container_depth = depth;
+
+        hbool_t is_first = false, is_last = false;
+        int64_t __sf_source_data_offset[maxdepth];
+        int64_t __sf_datasize[maxdepth];
+        int64_t __sf_offset[maxdepth];
+
+        memset(__sf_source_data_offset, 0, sizeof(__sf_offset));
+        memset(__sf_datasize, 0, sizeof(__sf_offset));
+        memset(__sf_offset, 0, sizeof(__sf_offset));
+
+        container_bytes = 0;
+        __sf_datasize[k] = container_bytes;
+        if (total_bytes < data_size) {
+            if (k == ioc_start) {
+                is_first = true;
+                container_bytes = start_length;
+                container_depth--; /* Account for the start_length */
+                if (ioc_final < ioc_start) {
+                    container_depth--;
+                    depth--;
+                }
+            }
+            if (k == ioc_final) {
+                is_last = true;
+                container_bytes += final_length;
+                if (container_depth)
+                    container_depth--; /* Account for the final_length */
+                if (depth)
+                    depth--;
+            }
+            container_bytes += container_depth * stripe_size;
+            total_bytes += container_bytes;
+        }
+
+        __sf_source_data_offset[0] = source_offset;
+        __sf_datasize[0] = container_bytes;
+        __sf_offset[0] = row_offset + offset_in_stripe;
+
+        if (container_count == 1) {
+            // sf_dtype[k] = MPI_BYTE;
+        } else {
+            /* Fill the IO datatypes */
+            if (is_first) {
+                if (is_last) { /* First + Last */
+                    H5FD__create_f_l_mpi_type(sf_context,
+                                              container_depth + 1,
+											  source_offset,
+											  container_bytes,
+											  row_offset + offset_in_stripe,
+                                              __sf_source_data_offset,
+                                              __sf_datasize,
+                                              __sf_offset,
+                                              start_length,
+                                              final_length );
+                } else { /* First ONLY */
+                    H5FD__create_first_mpi_type(sf_context,
+                                                container_depth,
+                                                source_offset,
+                                                container_bytes,
+                                                row_offset + offset_in_stripe,
+                                                __sf_source_data_offset,
+                                                __sf_datasize,
+                                                __sf_offset,
+                                                start_length);
+
+                }
+                /* Move the memory pointer to the starting location
+                 * for next IOC request.
+                 */
+                source_offset += start_length;
+                // offset_in_stripe = 0;
+            } else if (is_last) { /* Last ONLY */
+                H5FD__create_final_mpi_type( sf_context,
+                                             container_depth,
+                                             source_offset,
+                                             container_bytes,
+                                             row_offset + offset_in_stripe,
+                                             __sf_source_data_offset,
+                                             __sf_datasize,
+                                             __sf_offset,
+                                             final_length);
+                /* Probably not needed... */
+                source_offset += stripe_size;
+            } else { /* Everything else (uniform) */
+                H5FD__create_mpi_uniform_type(sf_context,
+                                              container_depth,
+											  source_offset,
+                                              container_bytes,
+											  row_offset + offset_in_stripe,
+											  __sf_source_data_offset,
+											  __sf_datasize,
+											  __sf_offset );
+                source_offset += stripe_size;
+            }
+        }
+
+        /*  Copy the per ioc subvector values into the outputs */
+        for (index = 0; index <= depth; index++) {
+            /* The output 2D arrays are indexed by [depth][ioc]
+             * to index by IOC (1 of 'container_count' containers)
+             * we simply add the container_count after each loop
+             * to arrive at the array info for the next container.
+             */
+#if 1
+            sf_source_data_offset[output_offset] = __sf_source_data_offset[index];
+            sf_datasize[output_offset]           = __sf_datasize[index];
+            sf_offset[output_offset]             = __sf_offset[index];
+            output_offset += container_count;
+#else
+            sf_source_data_offset[index][k] = __sf_source_data_offset[index];
+            sf_datasize[index][k]           = __sf_datasize[index];
+            sf_offset[index][k]             = __sf_offset[index];
+#endif
+        }
+
+        k++;
+		offset_in_stripe += __sf_datasize[0];
+        container_id++;
+
+        if (k == container_count) {
+            k = 0;
+            depth = ((row_id_final - container_id) / container_count) + 1;
+            row_offset += stripe_size;
+        }
+    }
+    if (total_bytes != data_size) {
+        printf("Error: total_bytes != data_size\n");
+    }
+
+    return depth +1;
+} /* end init__indep_io() */
+#endif
 
 /*-------------------------------------------------------------------------
- * Function:    Internal read__independent.
+ * Function:    Internal read__independent_async
  *
  * Purpose:     The IO operations can be striped across a selection of
  *              IO concentrators.  The read and write independent calls
@@ -667,6 +1119,109 @@ init__indep_io(subfiling_context_t *sf_context, int64_t *sf_source_data_offset,
  *-------------------------------------------------------------------------
  */
 static int
+read__independent_async(int n_io_concentrators, hid_t context_id, int64_t offset,
+						int64_t elements, int dtype_extent, void *data, io_req_t **io_req)
+{
+    int          sf_world_size, sf_world_rank;
+    int          status = 0, errors = 0;
+    int64_t      stripe_size, ioc_row, start_id, ioc_start, ioc_offset, offset_in_stripe;
+    int *        io_concentrator = NULL;
+    int *        subfile_fd = NULL;
+    io_req_t    *sf_io_request = NULL;
+    useconds_t   delay = 10;
+    int64_t      msg[3] = {0,};
+
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
+    assert(sf_context != NULL);
+
+    /* Calculate the IOC that we'll send the IO request to */
+    stripe_size = sf_context->sf_stripe_size;
+
+    start_id         = offset / stripe_size;
+    offset_in_stripe = offset % stripe_size;
+    ioc_row          = offset / sf_context->sf_blocksize_per_stripe;
+
+    ioc_start   = start_id % n_io_concentrators;
+    ioc_offset  = (ioc_row * stripe_size) + offset_in_stripe;
+
+    io_concentrator = sf_context->topology->io_concentrator;
+    assert(io_concentrator != NULL);
+
+    /* Make sure that we can return a request structure
+     * if everything is working correctly
+     */
+    assert(io_req);
+
+    sf_world_size = sf_context->topology->app_layout->world_size;
+    sf_world_rank = sf_context->topology->app_layout->world_rank;
+
+    /* Prepare an IO request.
+     * This gets sent to the ioc identified by the file offset
+     */
+    msg[0] = elements;
+    msg[1] = ioc_offset;
+    msg[2] = context_id;
+
+#if 0
+    printf("[%d %s] offset=%ld, ioc=%d, elements=%ld, ioc_offset=%ld\n",
+		   sf_world_rank, __func__, offset, (int)ioc_start, elements, ioc_offset );
+	fflush(stdout);
+#endif
+    status = MPI_Send(msg, 3, MPI_INT64_T, io_concentrator[ioc_start],
+            READ_INDEP, sf_context->sf_msg_comm);
+
+    if (status != MPI_SUCCESS) {
+        int  len;
+        char estring[MPI_MAX_ERROR_STRING];
+        MPI_Error_string(status, estring, &len);
+        printf("[%d] ERROR! MPI_Send request header (%ld) "
+                   "bytes to %d returned an error(%s)\n",
+               sf_world_rank, sizeof(msg), io_concentrator[ioc_start], estring);
+        fflush(stdout);
+        return -1;
+    }
+
+    /* At this point in the new implementation, we should queue
+     * the async recv so that when the top level VFD tells us
+     * to complete all pending IO requests, we have all the info
+     * we need to accomplish that.
+     */
+    sf_io_request = (io_req_t *)malloc(sizeof(io_req_t));
+    assert(sf_io_request);
+
+    sf_io_request->completion_func.io_args.ioc        = (int)ioc_start;
+    sf_io_request->completion_func.io_args.context_id = context_id;
+    sf_io_request->completion_func.io_args.offset     = offset;
+    sf_io_request->completion_func.io_args.elements   = elements;
+    sf_io_request->completion_func.io_args.data       = data;
+    sf_io_request->completion_func.io_args.io_req     = MPI_REQUEST_NULL;
+    sf_io_request->completion_func.io_function        = async_completion;
+    sf_io_request->completion_func.pending            = 0;
+
+    sf_io_request->prev = sf_io_request->next = NULL;
+    /* Start the actual data transfer */
+
+    status = MPI_Irecv(data, (int)elements,
+                       MPI_BYTE, io_concentrator[ioc_start],
+                       READ_INDEP_DATA,
+                       sf_context->sf_data_comm,
+                       &sf_io_request->completion_func.io_args.io_req);
+
+    if (status == MPI_SUCCESS) {
+        sf_io_request->completion_func.pending = 1;
+		*io_req = sf_io_request;
+    }
+	else {
+        puts("MPI_Irecv must have failed!");
+        free(sf_io_request);
+		*io_req = NULL;
+	}
+
+    return status;
+} /* end read__independent_async() */
+
+#ifdef USE_ORIGINAL_CODE
+static int
 read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, void *data)
 {
@@ -687,18 +1242,14 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
 
     useconds_t   delay = 10;
 
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
-	sf_world_rank = sf_context->topology->app_layout->world_rank;
+    sf_world_rank = sf_context->topology->app_layout->world_rank;
     subfile_fd = sf_context->topology->subfile_fd;
     assert(subfile_fd != NULL);
 
     io_concentrator = sf_context->topology->io_concentrator;
-    if (init__indep_io(sf_context, source_data_offset, ioc_read_datasize,
-            ioc_read_offset, ioc_read_type, offset, elements,
-            dtype_extent) < 0) {
-        return -1;
-    }
+
     /* Prepare the IOCs with a message which indicates the length
      * and file offset for the actual data to be provided.
      */
@@ -754,7 +1305,7 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
                     if (errors) {
                         puts("sf_read_data returned an error!");
                     }
-					else continue;
+                    else continue;
                 }
             }
         }
@@ -856,90 +1407,24 @@ read__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     }
     return status;
 }
+#endif
 
 /*-------------------------------------------------------------------------
- * Function:    Public/Client sf_read_independent
+ * Function:    get_ioc_subfile_path
  *
- * Purpose:     A public function which wraps the Internal version
- *              and allows the addition of the additional 'n_io_concentrator'
- *              argument.  This is important as it allows me to skip
- *              memory allocation functions since storage for the various
- *              vector variables is on the call stack...
+ * Purpose:     We provide a utility function to generate a subfiling
+ *              filename from a template.  While the user provides a
+ *              name which will serve as the HDF5 file name, sub-filing
+ *              files are related to the user filename via the filesytem 
+ *              inode identifier.  The inode id can be utilized as a
+ *              global unique identifier (GUID) which provides a
+ *              grouping ID to easily distinguish subfiles.
  *
- * Return:      The integer status returned by the Internal read_independent
- *              function.  Successful operations will return 0.
- * Errors:      An MPI related error value.
+ *              The inode_id is contained in the 'sf_context' structure.
  *
- * Programmer:  Richard Warren
- *              7/17/2020
- *
- * Changes:     Initial Version/None.
- *
+ * Return:      A full filepath which should be copied, e.g. using strdup
  *-------------------------------------------------------------------------
  */
-int
-sf_read_independent(hid_t sf_fid, int64_t offset, int64_t elements,
-    int dtype_extent, void *data)
-{
-    hid_t                sf_context_id = fid_map_to_context(sf_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
-
-    assert(sf_context != NULL);
-    return read__independent(sf_context->topology->n_io_concentrators,
-        sf_context_id, offset, elements, dtype_extent, data);
-}
-
-/*-------------------------------------------------------------------------
- * Function:    Public/Client sf_read_vector
- *
- * Purpose:     Another read__independent wrapper.  In this instance
- *              we simply loop over then collection of vector entries
- *              and call the sf__read_independent function.
- *
- * Return:      The integer status returned by the Internal read_independent
- *              function.  Successful operations will return 0.
- * Errors:      An MPI related error value.
- *
- * Programmer:  Richard Warren
- *              7/17/2020
- *
- * Changes:     Initial Version/None.
- *
- *-------------------------------------------------------------------------
- */
-herr_t
-sf_read_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[],
-    void *bufs[] /* data_out */)
-{
-    hssize_t             k;
-    herr_t               ret_value = SUCCEED;
-    hid_t                sf_context_id = fid_map_to_context(h5_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
-
-    assert(sf_context != NULL);
-
-    /* Unfortunately, we cannot know whether an incoming vector represents
-     * (as a whole) a contiguous block of data.  Certainly each vector entry
-     * is a contiguous block of data.  There is a temptation of course to
-     * attempt to merge multiple vector instances into a single MPI write
-     * by utilizing MPI datatypes. At this time we don't attempt to
-     * consolidate multiple vector entries and are thus forced to loop
-     * over the vector, sending one a vector entry at a time.
-     */
-    for (k = 0; k < (int32_t) count; k++) {
-        if (read__independent(sf_context->topology->n_io_concentrators,
-                sf_context_id, (int64_t) addrs[k], (int64_t) sizes[k], 1,
-                bufs[k]) != 0) {
-            printf("%s - encountered an internal error!\n", __func__);
-            goto errors;
-        }
-    }
-    return ret_value;
-
-errors:
-    return FAIL;
-}
-
 static char *
 get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context)
 {
@@ -959,10 +1444,139 @@ get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context)
                 ioc, ioc_count);
     }
     return filepath;
+} /* end get_ioc_subfile_path() */
+
+
+
+/*-------------------------------------------------------------------------
+ * Utility functions in support of a first pass attempt at handling async
+ * IO.  The working assumption is that reads and writes to a collection
+ * of IO Concentrators (IOCs) will proceed by stages.  In the first stage,
+ * each MPI rank will get their individual IOs started by preping the IOC
+ * with a message which indicates (via the MPI tag) what operation is
+ * starting, along with the file offset, data size, and a context_id.
+ * The latter will be used to access the actual open file descriptor.
+ * 
+ *-------------------------------------------------------------------------
+ * Function:    progress_this_pending_io
+ *
+ * Purpose:     In this initial example, we can progress an individual
+ *              IO request which is described by the io_req_t input arg.
+ *
+ * Return:      an integer status.  Zero(0) indicates success. Negative
+ *              values (-1) indicates an error.
+ *-------------------------------------------------------------------------
+ */
+static int
+progress_this_pending_io(io_req_t *this_req)
+{
+    assert(this_req);
+    assert(this_req->completion_func.io_function);
+    return (*this_req->completion_func.io_function)(&this_req->completion_func);
 }
 
 /*-------------------------------------------------------------------------
- * Function:    Internal write__independent.
+ * Function:    write_data
+ *
+ * Purpose:     Given a io_func_t structure containing the function pointer
+ *              and it's input arguments, we write the supplied data out
+ *              asynchronous using MPI_Isend, to the appropriate IOC.
+ *
+ * Return:      an integer status.  Zero(0) indicates success. Negative
+ *              values (-1) indicates an error.
+ *-------------------------------------------------------------------------
+ */
+static int
+write_data(io_func_t *this_func)
+{
+    int ioc, status;
+    hid_t context_id;
+    int64_t offset, elements;
+    void *data;
+    MPI_Request *io_req = NULL;
+    int *io_concentrator = NULL;
+    subfiling_context_t *sf_context = NULL;
+    assert(this_func);
+
+    sf_context = get__subfiling_object(this_func->io_args.context_id);
+    // printf("%s: context_id = %ld\n", __func__, this_func->io_args.context_id);
+
+    assert(sf_context);
+
+    io_concentrator = sf_context->topology->io_concentrator;
+    ioc = this_func->io_args.ioc;
+
+    status = MPI_Isend(data, (int)elements,
+                       MPI_BYTE, io_concentrator[ioc], WRITE_INDEP_DATA,
+                       sf_context->sf_data_comm, &this_func->io_args.io_req);
+    // printf("%s - Isend: io_req = %u\n",__func__, this_func->io_args.io_req);
+	// fflush(stdout);
+    return status;
+}
+
+/*-------------------------------------------------------------------------
+ * Function:    async_completion
+ *
+ * Purpose:     Given a single io_func_t structure containing the function
+ *              pointer and it's input arguments and a single MPI_Request
+ *              argument which needs to be completed, we make progress
+ *              by calling MPI_Test.  In this initial example, we loop
+ *              until the request is completed as indicated by a non-zero
+ *              flag variable.
+ *
+ *              As we go further with the implemention, we anticipate that
+ *              rather than testing a single request variable, we will
+ *              deal with a collection of all pending IO requests (on
+ *              this rank).
+ *
+ * Return:      an integer status.  Zero(0) indicates success. Negative
+ *              values (-1) indicates an error.
+ *-------------------------------------------------------------------------
+ */
+static int
+async_completion(void *arg)
+{
+    struct async_arg {
+		int n_reqs;
+		MPI_Request *sf_reqs;
+	} *in_progress = (struct async_arg *)arg;
+
+    assert(arg);
+    int status, errors = 0;
+    int count = in_progress->n_reqs;
+    int n_waiting = count;
+    int indices[count];
+	MPI_Status stats[count];
+    useconds_t delay = 5;
+
+    while (n_waiting) {
+        int i, ready = 0;
+        status = MPI_Testsome(count, in_progress->sf_reqs, &ready, indices, stats);
+        if (status != MPI_SUCCESS) {
+            int  len;
+            char estring[MPI_MAX_ERROR_STRING];
+            MPI_Error_string(status, estring, &len);
+            printf("[%s] MPI_ERROR! MPI_Testsome returned an error(%s)\n",
+                __func__, estring);
+            fflush(stdout);
+            errors++;
+			return -1;
+        }
+
+        if (ready == 0) {
+            usleep(delay);
+        }
+
+        for (i = 0; i < ready; i++) {
+            n_waiting--;
+        }
+    }
+    return errors;	
+}
+
+
+/*-------------------------------------------------------------------------
+ * Function:    Internal write__independent_async.
  *
  * Purpose:     The IO operations can be striped across a selection of
  *              IO concentrators.  The read and write independent calls
@@ -995,6 +1609,163 @@ get_ioc_subfile_path(int ioc, int ioc_count, subfiling_context_t *sf_context)
  *-------------------------------------------------------------------------
  */
 static int
+write__independent_async(int n_io_concentrators, hid_t context_id, int64_t offset,
+						 int64_t elements, int dtype_extent, void *data, io_req_t **io_req)
+{
+    int          sf_world_size, sf_world_rank;
+    int          ack = 0, active_sends = 0, n_waiting = 0, status = 0, errors = 0;
+    int64_t      stripe_size, ioc_row, start_id, ioc_start, ioc_offset, offset_in_stripe;
+    int *        io_concentrator = NULL;
+    int *        subfile_fd = NULL;
+    io_req_t    *sf_io_request = NULL;
+    MPI_Request  ackrequest;
+    int64_t      msg[3] = {0,};
+
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
+    assert(sf_context != NULL);
+
+    /* Calculate the IOC that we'll send the IO request to */
+    stripe_size = sf_context->sf_stripe_size;
+
+    start_id         = offset / stripe_size;
+    offset_in_stripe = offset % stripe_size;
+    ioc_row          = offset / sf_context->sf_blocksize_per_stripe;
+
+    ioc_start   = start_id % n_io_concentrators;
+    ioc_offset  = (ioc_row * stripe_size) + offset_in_stripe;
+
+    io_concentrator = sf_context->topology->io_concentrator;
+    assert(io_concentrator != NULL);
+
+    /* Make sure that we can return a request structure
+     * if everything is working correctly
+     */
+    assert(io_req);
+
+    sf_world_size = sf_context->topology->app_layout->world_size;
+    sf_world_rank = sf_context->topology->app_layout->world_rank;
+
+    /* Prepare an IO request.
+     * This gets sent to the ioc identified by the file offset.
+     * (see above: Calculate the IOC))
+     */
+    msg[0] = elements;
+    msg[1] = ioc_offset;
+    msg[2] = context_id;
+
+#if 0
+    printf("[%d %s] offset=%ld, ioc=%d, elements=%ld, ioc_offset=%ld\n",
+		   sf_world_rank, __func__, offset, (int)ioc_start, elements, ioc_offset );
+	fflush(stdout);
+#endif
+    status = MPI_Send(msg, 3, MPI_INT64_T, io_concentrator[ioc_start],
+            WRITE_INDEP, sf_context->sf_msg_comm);
+
+    if (status != MPI_SUCCESS) {
+        int  len;
+        char estring[MPI_MAX_ERROR_STRING];
+        MPI_Error_string(status, estring, &len);
+        printf("[%d] ERROR! MPI_Send of %ld bytes to %d returned an "
+                   "error(%s)\n",
+               sf_world_rank, sizeof(msg), io_concentrator[ioc_start], estring);
+        fflush(stdout);
+        return -1;
+    }
+    else active_sends++;
+    /* 
+     * We wait for memory to be allocated on the target IOC so that we can
+     * start sending user data. Once memory is allocated, we will receive
+     * an ACK (or NACK) message from the IOC to allow us to proceed.
+     */
+    // printf("Posting Irec for an ACK\n");
+    // fflush(stdout);
+    status = MPI_Irecv(&ack, 1, MPI_INT, io_concentrator[ioc_start],
+                       WRITE_INDEP_ACK, sf_context->sf_data_comm, &ackrequest);
+
+    if (status != MPI_SUCCESS) {
+        printf("[%d %s] MPI_Irecv failed\n", sf_world_rank, __func__);
+        fflush(stdout);
+        return -1;
+    }
+    
+    n_waiting = active_sends;
+    // printf("Waiting for an ACK\n");
+    // fflush(stdout);
+
+    while( n_waiting ) {
+        int flag = 0;
+        status = MPI_Test(&ackrequest, &flag, MPI_STATUS_IGNORE);
+        if (status == MPI_SUCCESS) {
+            if (flag == 0)
+                usleep(0);
+            else { 
+                n_waiting--;
+                if (ack == 0) {	/* NACK */
+                    printf("%s - Received NACK!\n", __func__);
+                }
+#if 0
+                else {
+                    puts("Received ACK");
+                }
+#endif
+            }
+        }
+    }
+
+    /* At this point in the new implementation, we should queue
+     * the async write so that when the top level VFD tells us
+     * to complete all pending IO requests, we have all the info
+     * we need to accomplish that.
+     */
+    sf_io_request = (io_req_t *)malloc(sizeof(io_req_t));
+    assert(sf_io_request);
+
+    sf_io_request->completion_func.io_args.ioc        = (int)ioc_start;
+    sf_io_request->completion_func.io_args.context_id = context_id;
+    sf_io_request->completion_func.io_args.offset     = offset;
+    sf_io_request->completion_func.io_args.elements   = elements;
+    sf_io_request->completion_func.io_args.data       = data;
+    sf_io_request->completion_func.io_args.io_req     = MPI_REQUEST_NULL;
+    sf_io_request->completion_func.io_function        = async_completion;
+    sf_io_request->completion_func.pending            = 0;
+
+    sf_io_request->prev = sf_io_request->next = NULL;
+    /* Start the actual data transfer */
+
+    status = MPI_Isend(data, (int)elements,
+                       MPI_BYTE, io_concentrator[ioc_start],
+                       WRITE_INDEP_DATA,
+                       sf_context->sf_data_comm,
+                       &sf_io_request->completion_func.io_args.io_req);
+
+	// printf("isend of %ld bytes to ioc(%d) returned %d, io_req=0x%x\n", elements,
+    //        (int)ioc_start, status, sf_io_request->completion_func.io_args.io_req);
+    // fflush(stdout);
+
+    /* When we actually have the async IO support,
+     * the request should be queued before we 
+     * return to the caller. 
+     * Having queued the IO operation, we might want to
+     * get additional work started before allowing the
+     * queued IO requests to make further progress and/or
+     * to complete, so we just return to the caller.
+     */
+
+    if (status == MPI_SUCCESS) {
+        sf_io_request->completion_func.pending = 1;
+		*io_req = sf_io_request;
+    }
+	else {
+        puts("MPI_Isend must have failed!");
+        free(sf_io_request);
+		*io_req = NULL;
+	}
+    return status;
+} /* end write__independent_async() */
+
+
+#ifdef USE_ORIGINAL_CODE
+static int
 write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     int64_t elements, int dtype_extent, void *data)
 {
@@ -1020,7 +1791,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     useconds_t   delay = 20;
 
 
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
 
     io_concentrator = sf_context->topology->io_concentrator;
@@ -1050,12 +1821,13 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
      * differently, the largest IO requests will require a stripe depth greater
      * than one.
      */
+#if 0
     if (init__indep_io(sf_context, source_data_offset, ioc_write_datasize,
             ioc_write_offset, ioc_write_type, offset, elements,
             dtype_extent) < 0) {
         return -1;
     }
-
+#endif
     /* 
      * Prepare the IOCs with a message which indicates the length
      * of the actual data to be written.  We also provide the file
@@ -1070,19 +1842,34 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
         int64_t msg[3] = { 0, };
         ioc = (sf_world_rank + target) % n_io_concentrators;
         sourceOffset = source_data_offset[ioc];
+        // printf("preparing for ioc(%d) write: datasize = %ld\n", ioc, ioc_write_datasize[ioc]);
         msg[0] = ioc_write_datasize[ioc];
         msg[1] = ioc_write_offset[ioc];
         msg[2] = sf_context->sf_context_id;
         acks[ioc] = 0;
         reqs[ioc] = MPI_REQUEST_NULL;
         ackreq[ioc] = MPI_REQUEST_NULL;
+        /* Having refactor'ed things, we aren't currently
+         * handling anything other than MPI_BYTE datatypes.
+         * The refactoring changes avoids using derived types
+         * by breaking larger data transfers into multiple
+         * segments.  As a result, for larger IO operations
+         * each IOC may require multiple IO requests to satisfy
+         * a single user IO.
+         * 
+         * Here, we presume that each transaction with an IOC
+         * thread will consist of a data IO which does not
+         * require a derived datatype, so simply assign
+         * the operational type as MPI_BYTE.
+         */
+        ioc_write_type[ioc] = MPI_BYTE;
 
         if (ioc_write_datasize[ioc] == 0) {
             skipped_writes++;
             continue;
         }
 
-		sourceOffset = source_data_offset[ioc];
+        sourceOffset = source_data_offset[ioc];
 
         if (sf_enable_directIO && (subfile_fd[ioc] == 0)) {
             char *subfile_path = get_ioc_subfile_path(ioc, n_io_concentrators, sf_context);
@@ -1310,7 +2097,7 @@ write__independent(int n_io_concentrators, hid_t context_id, int64_t offset,
     if (errors)
         return -1;
     return status;
-}
+} /* end write__independent() */
 
 /*-------------------------------------------------------------------------
  * Function:    Public/Client sf_write_independent
@@ -1337,7 +2124,7 @@ sf_write_independent(hid_t sf_fid, int64_t offset, int64_t elements,
     int dtype_extent, const void *data)
 {
     hid_t sf_context_id = fid_map_to_context(sf_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(sf_context_id);
 
     assert(sf_context != NULL);
     return write__independent(sf_context->topology->n_io_concentrators,
@@ -1369,12 +2156,16 @@ sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[],
     hssize_t             status=0, k = 0;
     herr_t               ret_value = SUCCEED;
     hid_t                sf_context_id = fid_map_to_context(h5_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(sf_context_id);
 
     assert(sf_context != NULL);
 
     /*
      * Call the underlying write function for each vector element.
+     * 'count' represents the number of IOCs that we are dealing with.
+     * Each loop should be writing data to a new subfile. 
+     * 'addrs' represents the filespace address which needs to be decoded
+     * into the appropriate IOC and subfile offset.
      */
     for (k = 0; k < count; k++) {
         status = write__independent(sf_context->topology->n_io_concentrators,
@@ -1389,7 +2180,9 @@ sf_write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[],
 
 errors:
     return FAIL;
-}
+}   /* end sf_write_vector() */
+
+#endif	/* #ifdef USE_ORIGINAL_CODE */
 
 /* 
  * FIXME::
@@ -1398,15 +2191,74 @@ errors:
  * and 'H5FD_mem_t types[]'. Those are included here at present, but
  * need to be addressed at some point.
  */
-herr_t ioc_write_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_in */)
+herr_t
+H5FD__write_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_in */)
 {
-    herr_t               ret_value = SUCCEED;	
+    herr_t               ret_value = SUCCEED;   
     hssize_t             status=0, k = 0;
     hid_t                sf_context_id = fid_map_to_context(h5_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
+    subfiling_context_t *sf_context = NULL;
+    io_req_t            **sf_async_reqs = NULL;
+    MPI_Request         *active_reqs = NULL;
+    struct __mpi_req {
+        int n_reqs;
+        MPI_Request *active_reqs;
+    } *mpi_reqs = NULL;
 
+    sf_context = get__subfiling_object(sf_context_id);
     assert(sf_context != NULL);
 
+    active_reqs = (MPI_Request *)calloc(count+2, sizeof(MPI_Request));
+    assert(active_reqs);
+
+    sf_async_reqs = (io_req_t *)calloc(count, sizeof(io_req_t *));
+    assert(sf_async_reqs);
+
+    /* 
+     * Note: We allocated extra space in the active_requests (above).
+     * The extra should be enough for an integer plus a pointer.
+     */
+    mpi_reqs = (struct __mpi_req *)&active_reqs[count];
+    mpi_reqs->n_reqs = count;    
+    mpi_reqs->active_reqs = active_reqs;
+
+    /* Each pass thru the following should queue an MPI write
+     * to a new IOC. Both the IOC selection and offset within the
+     * particular subfile are based on the combinatation of striping
+     * factors and the virtual file offset (addrs[k]).
+     */
+    for (k=0; k < count; k++) {
+        status = write__independent_async(count,
+										  sf_context_id, (int64_t) addrs[k],
+										  (int64_t) sizes[k], 1, bufs[k],
+                                          &sf_async_reqs[k] );
+        if (status < 0) {
+            printf("%s - encountered an internal error!\n", __func__);
+            goto errors;
+        }
+		else {
+            mpi_reqs->active_reqs[k] = sf_async_reqs[k]->completion_func.io_args.io_req;
+		}
+    }
+
+    /* Here, we should have queued 'count' async requests.
+     * We can can now try to complete those before returning
+     * to the caller for the next set of IO operations.
+     */
+    if (sf_async_reqs[0]->completion_func.io_function)
+        ret_value = (*sf_async_reqs[0]->completion_func.io_function)(mpi_reqs);
+
+    if (active_reqs) 
+        free(active_reqs);
+
+    if (sf_async_reqs) {
+        for (k=0; k < count; k++) {
+            if (sf_async_reqs[k]) {
+                free(sf_async_reqs[k]);
+            }
+        }
+        free(sf_async_reqs);
+    }
     return ret_value;
 
 errors:
@@ -1421,15 +2273,69 @@ errors:
  * and 'H5FD_mem_t types[]'. Those are included here at present, but
  * need to be addressed at some point.
  */
-herr_t ioc_read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_out */)
+herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_out */)
 {
-    herr_t               ret_value = SUCCEED;	
+    herr_t               ret_value = SUCCEED;   
     hssize_t             status=0, k = 0;
     hid_t                sf_context_id = fid_map_to_context(h5_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
+    subfiling_context_t *sf_context = NULL;
+	io_req_t            **sf_async_reqs = NULL;
+	MPI_Request         *active_reqs = NULL;
+    struct __mpi_req {
+		int n_reqs;
+		MPI_Request *active_reqs;
+	} *mpi_reqs = NULL;
 
+    sf_context = get__subfiling_object(sf_context_id);
     assert(sf_context != NULL);
 
+    active_reqs = (MPI_Request *)calloc(count+2, sizeof(MPI_Request));
+    assert(active_reqs);
+
+    sf_async_reqs = (io_req_t *)calloc(count, sizeof(io_req_t *));
+    assert(sf_async_reqs);
+
+    /* 
+     * Note: We allocated extra space in the active_requests (above).
+     * The extra should be enough for an integer plus a pointer.
+     */
+    mpi_reqs = (struct __mpi_req *)&active_reqs[count];
+    mpi_reqs->n_reqs = count;
+    mpi_reqs->active_reqs = active_reqs;
+
+    for (k=0; k < count; k++) {
+        status = read__independent_async(sf_context->topology->n_io_concentrators,
+										  sf_context_id, (int64_t) addrs[k],
+										  (int64_t) sizes[k], 1, bufs[k],
+                                          &sf_async_reqs[k] );
+        if (status < 0) {
+            printf("%s - encountered an internal error!\n", __func__);
+            goto errors;
+        }
+		else {
+            mpi_reqs->active_reqs[k] = sf_async_reqs[k]->completion_func.io_args.io_req;
+		}
+    }
+    /* Here, we should have queued 'count' async requests 
+     * (one to each required IOC).
+     *
+     * We can can now try to complete those before returning
+     * to the caller for the next set of IO operations.
+     */
+    if (sf_async_reqs[0]->completion_func.io_function)
+        ret_value = (*sf_async_reqs[0]->completion_func.io_function)(mpi_reqs);
+
+    if (active_reqs) 
+        free(active_reqs);
+
+    if (sf_async_reqs) {
+        for (k=0; k < count; k++) {
+            if (sf_async_reqs[k]) {
+                free(sf_async_reqs[k]);
+            }
+        }
+        free(sf_async_reqs);
+    }
     return ret_value;
 
 errors:
@@ -1442,7 +2348,7 @@ int
 sf_truncate(hid_t h5_fid, haddr_t H5_ATTR_PARALLEL_UNUSED addr)
 {
     hid_t                sf_context_id = fid_map_to_context(h5_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(sf_context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(sf_context_id);
 
     assert(sf_context != NULL);
     return 0;
@@ -1454,7 +2360,7 @@ int
 sf_shutdown_local_ioc(hid_t fid)
 {
     hid_t context_id = fid_map_to_context(fid);
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
     if (sf_context->topology->rank_is_ioc) {
         sf_shutdown_flag = 1;
@@ -1535,16 +2441,22 @@ ioc_main(int64_t context_id)
     MPI_Status           status, msg_status;
     sf_work_request_t *  incoming_requests = NULL;
     useconds_t           delay = 20;
-    subfiling_context_t *context = get_subfiling_object(context_id);
+    subfiling_context_t *context = get__subfiling_object(context_id);
     double               queue_start_time;
 
     assert(context != NULL);
-    /* We can't have opened any files at this point.. */
-    context->sf_fid = -1;
+    /* We can't have opened any files at this point.. 
+     * The file open approach has changed so that the normal
+     * application rank (hosting this thread) does the file open.
+     * We can simply utilize the file descriptor (which should now
+     * represent an open file).
+     */
+    // context->sf_fid = -1;
 
     subfile_rank = context->sf_group_rank;
     sf_world_size = context->topology->app_layout->world_size;
     sf_world_rank = context->topology->app_layout->world_rank;
+
     if (request_count_per_rank == NULL) {
         request_count_per_rank =
             (int *) calloc((size_t) sf_world_size, sizeof(int));
@@ -1574,6 +2486,7 @@ ioc_main(int64_t context_id)
         if ((ret == MPI_SUCCESS) && (flag != 0)) {
             sf_work_request_t *msg = NULL;
             int                count;
+            int                index;
             int                request_size = (int) sizeof(sf_work_request_t);
             int                source = status.MPI_SOURCE;
             int                tag = status.MPI_TAG;
@@ -1584,23 +2497,36 @@ ioc_main(int64_t context_id)
                 ret = MPI_Recv(msg, count, MPI_BYTE, source, tag,
                     context->sf_msg_comm, &msg_status);
             } else {
-                ret = MPI_Recv(&incoming_requests[sf_workinprogress], count,
+                index = atomic_load(&sf_workinprogress);
+                ret = MPI_Recv(&incoming_requests[index], count,
                     MPI_BYTE, source, tag, context->sf_msg_comm, &msg_status);
+                if (MPI_SUCCESS == ret) {
+                    int howmany = 0;
+                    MPI_Get_count(&msg_status, MPI_BYTE, &howmany);
+                    if (howmany != count) {
+                        printf("%s: MPI_Recv completed %d bytes of %d\n", __func__, howmany, count);
+                        fflush(stdout);
+                    }
+                }
             }
             queue_start_time = MPI_Wtime();
             if (ret == MPI_SUCCESS) {
                 if (msg) {
+                    printf("%s: non-std msg=(%p) from %d\n", __func__, msg, source);
+                    fflush(stdout);
+
                     msg->source = source;
                     msg->subfile_rank = subfile_rank;
                     msg->context_id = context->sf_context_id;
                     msg->start_time = queue_start_time;
                     tpool_add_work(msg);
                 } else {
-                    int index = atomic_load(&sf_workinprogress);
                     incoming_requests[index].tag = tag;
                     incoming_requests[index].source = source;
                     incoming_requests[index].subfile_rank = subfile_rank;
                     incoming_requests[index].start_time = queue_start_time;
+					incoming_requests[index].buffer = NULL;
+					incoming_requests[index].completed = 0;
                     tpool_add_work(&incoming_requests[index]);
                     if (index == max_work_depth - 1) {
                         atomic_init(&sf_workinprogress, 0);
@@ -1706,7 +2632,7 @@ queue_write_indep(
     int64_t              file_context_id = msg->header[2];
     double               t_start, t_end;
     double               t_write, t_wait, t_queue_delay;
-    subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
     /* flag that we've attempted to write data to the file */
@@ -1766,7 +2692,6 @@ queue_write_indep(
     }
 
     fd = sf_context->sf_fid;
-
     if (fd < 0) {
         printf("[ioc(%d)] WARNING: %s called while subfile_fid = %d (closed)\n",
             subfile_rank, __func__, fd);
@@ -1788,6 +2713,7 @@ queue_write_indep(
     sf_queue_delay_time += t_queue_delay;
 
     /* Done... */
+	msg->completed = 1;
     if (recv_buffer) {
         free(recv_buffer);
     }
@@ -1827,7 +2753,7 @@ queue_read_indep(
     double               t_start, t_end;
     double               t_read, t_queue_delay;
 
-    subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
     sf_context->sf_read_count++;
@@ -1863,7 +2789,7 @@ queue_read_indep(
         fflush(stdout);
         return -1;
     }
-    
+
     ret = MPI_Send(send_buffer, (int) data_size, MPI_BYTE, source, READ_INDEP_DATA, comm);
     if (ret != MPI_SUCCESS) {
         int  len;
@@ -1879,6 +2805,11 @@ queue_read_indep(
     t_read = t_end - t_start;
     sf_pread_time += t_read;
     sf_queue_delay_time += t_queue_delay;
+#if 0
+    printf("[ioc(%d)] MPI_Send %ld bytes to source(%d) completed\n",
+            subfile_rank, data_size, source);
+    fflush(stdout);
+#endif
 
 #ifndef NDEBUG
     if (sf_verbose_flag && (sf_logfile != NULL)) {
@@ -1923,8 +2854,7 @@ queue_read_indep(
  *-------------------------------------------------------------------------
  */
 int
-subfiling_open_file(
-    sf_work_request_t *msg, int subfile_rank, int flags)
+subfiling_open_file( sf_work_request_t *msg, int subfile_rank, int flags)
 {
     int errors = 0;
     int subfile_fid = -1;
@@ -1940,15 +2870,17 @@ subfiling_open_file(
      */
 
     t_start = MPI_Wtime();
+    /* Only allow the actual IO concentrator ranks to create sub-files */
     if (subfile_rank >= 0) {
         char                 config[PATH_MAX];
         int64_t              h5_file_id = msg->header[1];
         int64_t              file_context_id = msg->header[2];
-        subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
+        subfiling_context_t *sf_context = get__subfiling_object(file_context_id);
         assert(sf_context != NULL);
 
         begin_thread_exclusive();
-
+        // printf("%s (before) sf_fid = %d\n", __func__, sf_context->sf_fid );
+        /* Check to see whether we need to create the subfile(s) */
         if (sf_context->sf_fid < 0) {
             int  n_io_concentrators = sf_context->topology->n_io_concentrators;
             int *io_concentrator = sf_context->topology->io_concentrator;
@@ -1968,11 +2900,22 @@ subfiling_open_file(
             }
             if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
                 end_thread_exclusive();
-                printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
-                fflush(stdout);
+                // printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
+                // fflush(stdout);
+
+#ifndef NDEBUG
+                if (sf_verbose_flag) {
+                    printf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__, filepath);
+                    fflush(stdout);
+                }
+#endif
                 errors++;
                 goto done;
             }
+
+            // printf("%s: (after) sf_fid = %d\n", __func__, sf_context->sf_fid); 
+            // fflush(stdout);
+
             strcpy(filepath,sf_context->filename);
             subfile_dir = strrchr(filepath, '/');
             if (subfile_dir) {
@@ -2076,7 +3019,7 @@ int
 sf_get_mpi_rank(hid_t fid, int *rank)
 {
     hid_t                context_id = fid_map_to_context(fid);
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
     assert(rank != NULL);
     *rank = sf_context->sf_group_rank;
@@ -2087,7 +3030,7 @@ int
 sf_get_mpi_size(hid_t fid, int *size)
 {
     hid_t                context_id = fid_map_to_context(fid);
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
     assert(size != NULL);
     *size = sf_context->sf_group_size;
@@ -2098,7 +3041,7 @@ int
 sf_get_group_comm(hid_t fid, MPI_Comm *comm)
 {
     hid_t                context_id = fid_map_to_context(fid);
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     assert(sf_context != NULL);
     assert(comm != NULL);
     *comm = sf_context->sf_group_comm;
@@ -2111,7 +3054,7 @@ sf_subfile_set_logging(hid_t sf_fid, int ioc_rank, int flag)
     int                  ioc;
     int                  status = 0;
     hid_t                context_id = fid_map_to_context(sf_fid);
-    subfiling_context_t *sf_context = get_subfiling_object(context_id);
+    subfiling_context_t *sf_context = get__subfiling_object(context_id);
     int                  n_io_concentrators;
     int *                io_concentrator = NULL;
     int64_t              lflag = (int64_t)(flag & 0xFF);

@@ -34,19 +34,48 @@
 
 /* The driver identification number, initialized at runtime */
 static hid_t H5FD_IOC_g = 0;
-static int sf_shutdown_flag = 0;
+extern volatile int sf_shutdown_flag;
 
 /* The information of this ioc */
 typedef struct H5FD_ioc_t {
     H5FD_t          pub;        /* public stuff, must be first    */
-    unsigned        version;    /* version of the H5FD_ioc_vfd_config_t structure used */
-    H5FD_ioc_config_t fa;       /* driver-specific file access properties */
     int             fd;			/* the filesystem file descriptor */
+
+    H5FD_ioc_config_t fa;       /* driver-specific file access properties */
     int             mpi_rank;
 	int             mpi_size;
-    H5FD_t *        ioc_file;   /* HDF5 file pointer */
-    dev_t           device;     /* file device number   */
-    ino_t           inode;      /* inode of the HDF5 file */
+    H5FD_t *        ioc_file;   /* native HDF5 file pointer (sec2) */
+
+#ifndef H5_HAVE_WIN32_API
+    /* On most systems the combination of device and i-node number uniquely
+     * identify a file.  Note that Cygwin, MinGW and other Windows POSIX
+     * environments have the stat function (which fakes inodes)
+     * and will use the 'device + inodes' scheme as opposed to the
+     * Windows code further below.
+     */
+    dev_t                    device;     /* file device number   */
+    ino_t                    inode;      /* file i-node number   */
+#else
+    /* Files in windows are uniquely identified by the volume serial
+     * number and the file index (both low and high parts).
+     *
+     * There are caveats where these numbers can change, especially
+     * on FAT file systems.  On NTFS, however, a file should keep
+     * those numbers the same until renamed or deleted (though you
+     * can use ReplaceFile() on NTFS to keep the numbers the same
+     * while renaming).
+     *
+     * See the MSDN "BY_HANDLE_FILE_INFORMATION Structure" entry for
+     * more information.
+     *
+     * http://msdn.microsoft.com/en-us/library/aa363788(v=VS.85).aspx
+     */
+    DWORD                    nFileIndexLow;
+    DWORD                    nFileIndexHigh;
+    DWORD                    dwVolumeSerialNumber;
+
+    HANDLE                   hFile;      /* Native windows file handle */
+#endif  /* H5_HAVE_WIN32_API */
 } H5FD_ioc_t;
 
 
@@ -85,9 +114,12 @@ typedef struct H5FD_ioc_t {
 #endif /* H5FD_IOC_DEBUG_OP_CALLS */
 
 /* Public functions which are referenced but not found in this file */
-extern herr_t ioc_write_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_in */);
+extern herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_in */);
+extern herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[], hsize_t sizes[], void *bufs[] /* data_out */);
 extern int H5FD__close_subfiles(int64_t context_id);
-extern int H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int flags);
+extern int H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int fd, int flags);
+extern hid_t fid_map_to_context(hid_t sf_fid);
+extern subfiling_context_t * get__subfiling_object(int64_t context_id);
 
 /* Private functions */
 /* Prototypes */
@@ -119,6 +151,7 @@ static herr_t H5FD__ioc_flush(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_truncate(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_lock(H5FD_t *_file, hbool_t rw);
 static herr_t H5FD__ioc_unlock(H5FD_t *_file);
+static herr_t H5FD__ioc_ctl(H5FD_t *file, uint64_t op_code, uint64_t flags, const void * input, void ** result);
 
 static const H5FD_class_t H5FD_ioc_g = {
     "ioc",                      /* name                 */
@@ -233,9 +266,9 @@ H5FD_ioc_set_shutdown_flag(int flag)
 {
     sf_shutdown_flag = flag;
     if (H5FD_IOC_g > 0)
-		usleep(20);
+		usleep(100);
     return;    
-}
+} /* end H5FD_ioc_set_shutdown_flag() */
 
 
 /*---------------------------------------------------------------------------
@@ -342,6 +375,17 @@ done:
 } /* end H5Pset_fapl_ioc() */
 
 
+/*-------------------------------------------------------------------------
+ * Function:    fapl_get_ioc_defaults
+ *
+ * Purpose:     This is called by H5Pget_fapl_ioc when called with no
+ *              established configuration info.  This simply fills in
+ *              in the basics.   This avoids the necessity of having
+ *              the user write code to initialize the config structure.
+ *
+ * Return:      SUCCEED/FAIL
+ *-------------------------------------------------------------------------
+ */
 static herr_t
 fapl_get_ioc_defaults(H5FD_ioc_config_t *fa)
 {
@@ -357,7 +401,7 @@ fapl_get_ioc_defaults(H5FD_ioc_config_t *fa)
     /* Specific to this IO Concentrator */
     fa->thread_pool_count = H5FD_IOC_THREAD_POOL_SIZE;
     return (ret_value);
-}
+} /* end fapl_get_ioc_defaults() */
 
 
 /*-------------------------------------------------------------------------
@@ -499,15 +543,15 @@ H5FD__ioc_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id,
     H5FD_ioc_t *file_ptr = (H5FD_ioc_t *)_file;
     H5P_genplist_t  *plist_ptr     = NULL;
     herr_t           ret_value = SUCCEED;
+    hid_t            h5_fid;
 
     FUNC_ENTER_STATIC
 
     if(NULL == (plist_ptr = (H5P_genplist_t *)H5I_object(dxpl_id)))
         HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, FAIL, "not a property list")
 
-    if (H5FD__write_subfiles(file_ptr->inode, addr, size, buf) < 0) {
-        HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "R/W file write failed")
-	}
+    h5_fid = (hid_t)file_ptr->inode;
+    ret_value = H5FD__write_vector_internal (h5_fid, 1, &addr, &size, &buf);
 
 done:
     FUNC_LEAVE_NOAPI(ret_value)
@@ -551,7 +595,7 @@ H5FD__ioc_read_vector(H5FD_t *_file, hid_t dxpl_id, uint32_t count,
     }
 
     h5_fid = (hid_t)file_ptr->inode;
-    ret_value = ioc_read_vector_internal (h5_fid, count, addrs, sizes, bufs);
+    ret_value = H5FD__read_vector_internal (h5_fid, count, addrs, sizes, bufs);
 
 done:
     FUNC_LEAVE_NOAPI(ret_value)
@@ -592,9 +636,8 @@ H5FD__ioc_write_vector(H5FD_t *_file, hid_t dxpl_id, uint32_t count,
         if(TRUE != H5P_isa_class(dxpl_id, H5P_DATASET_XFER))
             HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, FAIL, "not a data transfer property list")
     }
-
     h5_fid = (hid_t)file->inode;
-    ret_value = ioc_write_vector_internal (h5_fid, count, addrs, sizes, bufs);
+    ret_value = H5FD__write_vector_internal (h5_fid, count, addrs, sizes, bufs);
 
 done:
 
@@ -802,29 +845,38 @@ H5FD__ioc_open(const char *name, unsigned flags, hid_t ioc_fapl_id, haddr_t maxa
 
         /* sec2 open the file */
         file_ptr->ioc_file = H5FD_open(name, flags, fapl_ptr->common.ioc_fapl_id, HADDR_UNDEF);
-
-        if (mpi_rank == 0) {
-            if(file_ptr->ioc_file) {
-                H5FD_sec2_t *hdf_file = (H5FD_sec2_t *)file_ptr->ioc_file;
-                file_ptr->fd     = HDdup(hdf_file->fd);
-                file_ptr->device = hdf_file->device;
-                inode_id         = hdf_file->inode;
-            }
+        if (file_ptr->ioc_file) {
+            h5_stat_t sb;
+            H5FD_sec2_t *hdf_file = (H5FD_sec2_t *)file_ptr->ioc_file;
+            if (HDfstat(hdf_file->fd, &sb) < 0)
+                HSYS_GOTO_ERROR(H5E_FILE, H5E_BADFILE, NULL, "unable to fstat file")
+            /* Get the inode info an copy the open file descriptor 
+             * The latter is used to pass to the subfiling code to use
+             * as an alternative to opening a new subfiling file, e.g. nnn_0_of_N.h5
+             *
+             * We will use the user named HDF5 file as the zeroth subfile.
+             * Because of this we need prevent the new file opening as the zeroth subfile.
+             * For this reason, we will pass along a copy of the sec2 opened file descriptor.
+             */
+            file_ptr->inode = inode_id = sb.st_ino;
+            file_ptr->fd    = HDdup(hdf_file->fd);
+			// HDclose(hdf_file->fd);
         }
-        if (MPI_SUCCESS == MPI_Bcast(&inode_id, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD)) {
-            file_ptr->inode  = inode_id;
-        }
-        if (inode_id == (uint64_t)-1)
-            HGOTO_ERROR( H5E_FILE, H5E_CANTOPENFILE, NULL, "unable to open file = %s\n", name)
 
 		/* See: H5FDsubfile_int.c */
-        if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, ioc_flags) < 0)
+        if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, file_ptr->fd, ioc_flags) < 0)
             HGOTO_ERROR( H5E_FILE, H5E_CANTOPENFILE, NULL, "unable to open subfiling files = %s\n", name)
+
+        else if (file_ptr->fd > 0) {
+            subfiling_context_t *sf_context = get__subfiling_object(file_ptr->fa.common.context_id);
+            if (sf_context) {
+                if (initialize_ioc_threads(sf_context) < 0) {
+                    HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "Unable to initialize IOC threads")
+                }
+            }
+        }
     }
 
-    /* We should check to see if H5FDmpio is being used.
-     * If yes, then collectively call the file open...
-     */
     else { 
         HDputs("We only support sec2 file opens at the moment.");
         HGOTO_ERROR( H5E_FILE, H5E_CANTOPENFILE, NULL, "unable to open file = %s\n", name)
@@ -1371,6 +1423,19 @@ H5FD__ioc_free(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, hsiz
 done:
     FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5FD__ioc_free() */
+
+static
+herr_t H5FD__ioc_ctl(H5FD_t *file, uint64_t op_code, uint64_t flags, const void * input, void ** result)
+{
+    herr_t ret_value = SUCCEED;  /* Return value */
+
+    FUNC_ENTER_PACKAGE
+
+done:
+    FUNC_LEAVE_NOAPI(ret_value)
+}
+
+
 
 void H5FD_ioc_wait_thread_main(void)
 {

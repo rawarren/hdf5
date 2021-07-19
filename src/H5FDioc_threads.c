@@ -93,9 +93,11 @@ ioc_thread_main(void *arg)
  *-------------------------------------------------------------------------
  */
 int
-initialize_ioc_threads(subfiling_context_t *sf_context)
+initialize_ioc_threads(void *_sf_context)
 {
     int      status;
+	int      file_open_count;
+	subfiling_context_t *sf_context = _sf_context;
     unsigned int thread_pool_count = HG_TEST_NUM_THREADS_DEFAULT;
     int64_t *context_id = (int64_t *) malloc(sizeof(int64_t));
     int      world_size = sf_context->topology->app_layout->world_size;
@@ -103,8 +105,16 @@ initialize_ioc_threads(subfiling_context_t *sf_context)
     char    *envValue;
     double   t_start = 0.0, t_end = 0.0;
 
-	t_start = MPI_Wtime();
     assert(context_id != NULL);
+
+	file_open_count = atomic_load(&sf_file_open_count);
+	atomic_fetch_add(&sf_file_open_count, 1);
+
+	if (file_open_count > 0)
+        return 0;		
+
+    t_start = MPI_Wtime();
+
     /* Initialize the main IOC thread input argument.
      * Each IOC request will utilize this context_id which is
      * consistent across all MPI ranks, to ensure that requests
@@ -233,7 +243,12 @@ handle_work_request(void *arg)
     hg_thread_ret_t      ret = 0;
     sf_work_request_t *  msg = (sf_work_request_t *) arg;
     int64_t              file_context_id = msg->header[2];
-    subfiling_context_t *sf_context = get_subfiling_object(file_context_id);
+    subfiling_context_t *sf_context = NULL;
+
+	// printf("%s: from src=%d msg=%p, msg->header[0]=%ld, [1]=%ld, [2]=%ld\n",
+	// __func__, msg->source, arg, msg->header[0],msg->header[1], msg->header[2]);
+    // fflush(stdout);
+    sf_context = get__subfiling_object(file_context_id);
     assert(sf_context != NULL);
 
     atomic_fetch_add(&sf_work_pending, 1); // atomic
@@ -252,6 +267,7 @@ handle_work_request(void *arg)
             status = -1;
             break;
     }
+    fflush(stdout);
 
     atomic_fetch_sub(&sf_work_pending, 1); // atomic
     if (status < 0) {

@@ -45,6 +45,11 @@
 /* Definitions for file MPI type property */
 #define H5FD_MPI_XFER_FILE_MPI_TYPE_NAME "H5FD_mpi_file_mpi_type"
 
+typedef struct H5FD_class_aio_t {
+    H5FD_class_t super;                       /* Superclass information & methods */
+	herr_t (*h5fdctl)(const H5FD_t *file, uint64_t op_code, uint64_t flags, const void * input, void ** result);
+} H5FD_class_aio_t;
+
 /* Sub-class the H5FD_class_t to add more specific functions for MPI-based VFDs */
 typedef struct H5FD_class_mpi_t {
     H5FD_class_t super;                       /* Superclass information & methods */
