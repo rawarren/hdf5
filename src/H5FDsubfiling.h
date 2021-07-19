@@ -22,13 +22,12 @@
 
 #include "H5FDsubfiling_priv.h"
 
-#define H5FD_SUBFILING	(H5FD_subfiling_init())
+#define H5FD_SUBFILING (H5FD_subfiling_init())
 
 #ifndef H5FD_SUBFILING_FAPL_T_MAGIC
-#define H5FD_CURR_SUBFILING_FAPL_T_VERSION     1
+#define H5FD_CURR_SUBFILING_FAPL_T_VERSION 1
 #define H5FD_SUBFILING_FAPL_T_MAGIC 0xFED01331
 #endif
-
 
 /****************************************************************************
  *
@@ -36,9 +35,9 @@
  *
  * Purpose:
  *
- *     H5FD_subfiling_fapl_t is a public structure that is used to pass 
- *     subfiling configuration data to the appropriate subfiling VFD via 
- *     the FAPL.  A pointer to an instance of this structure is a parameter 
+ *     H5FD_subfiling_fapl_t is a public structure that is used to pass
+ *     subfiling configuration data to the appropriate subfiling VFD via
+ *     the FAPL.  A pointer to an instance of this structure is a parameter
  *     to H5Pset_fapl_subfiling() and H5Pget_fapl_subfiling().
  *
  * `magic`   (uint32_t)
@@ -50,8 +49,8 @@
  *
  * `version` (uint32_t)
  *
- *     Version number of the H5FD_subfiling_fapl_t structure.  Any instance 
- *     passed to the above calls must have a recognized version number, or 
+ *     Version number of the H5FD_subfiling_fapl_t structure.  Any instance
+ *     passed to the above calls must have a recognized version number, or
  *     an error will be flagged.
  *
  *     This field should be set to H5FD_CURR_SUBFILING_FAPL_T_VERSION.
@@ -63,8 +62,8 @@
  *
  * `stripe_count` (int32_t)
  *
- *     The integer value which identifies the total number of 
- *     subfiles that have been algorthmically been selected to 
+ *     The integer value which identifies the total number of
+ *     subfiles that have been algorthmically been selected to
  *     to contain the segments of raw data which make up an HDF5
  *     file.  This value is used to implement the RAID-0 functionality
  *     when reading or writing datasets.
@@ -98,7 +97,7 @@
  *     distributed parallel application.  This IO indirection
  *     thus allows application access all sub-files even while
  *     these may actually be node-local and thus not directly
- *     accessable to remote ranks. 
+ *     accessable to remote ranks.
  *
  ***   Subfiling file Info
  *
@@ -122,9 +121,9 @@ typedef struct config_common_t {
     int32_t         stripe_count;
     int64_t         stripe_depth;
     ioc_selection_t ioc_selection;
-	hid_t           ioc_fapl_id;
+        hid_t           ioc_fapl_id;
     char            subfile_dir[H5FD_SUBFILING_PATH_MAX +1];
-	char            subfile_path[H5FD_SUBFILING_PATH_MAX +1];
+        char            subfile_path[H5FD_SUBFILING_PATH_MAX +1];
 } config_common_t;
 
  ****************************************************************************/
@@ -143,10 +142,9 @@ typedef struct config_common_t {
  */
 
 typedef struct H5FD_subfiling_config_t {
-    config_common_t common; 
-    hbool_t         require_ioc;
+  config_common_t common;
+  hbool_t require_ioc;
 } H5FD_subfiling_config_t;
-
 
 #ifdef __cplusplus
 extern "C" {
@@ -156,59 +154,69 @@ extern FILE *sf_logfile;
 extern FILE *client_log;
 
 H5_DLL hid_t H5FD_subfiling_init(void);
-H5_DLL herr_t H5Pget_fapl_subfiling(hid_t fapl_id, H5FD_subfiling_config_t *config_out);
-H5_DLL herr_t H5Pset_fapl_subfiling(hid_t fapl_id,  H5FD_subfiling_config_t *vfd_config);
+H5_DLL herr_t H5Pget_fapl_subfiling(hid_t fapl_id,
+                                    H5FD_subfiling_config_t *config_out);
+H5_DLL herr_t H5Pset_fapl_subfiling(hid_t fapl_id,
+                                    H5FD_subfiling_config_t *vfd_config);
 H5_DLL herr_t H5FD__get_file_ino(const char *name, uint64_t *st_ino);
-H5_DLL char * H5FD__get_file_directory(void *h5file);
-H5_DLL herr_t H5FD__dataset_write_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t dtype_extent,
-											 int mpi_rank, int mpi_size, void *_dset, hid_t mem_type_id, hid_t mem_space_id,
-											 hid_t file_space_id, hid_t plist_id, const void *buf);
-H5_DLL herr_t H5FD__dataset_read_contiguous(hid_t h5_file_id, haddr_t dataset_baseAddr, size_t dtype_extent, 
-											int mpi_rank, int mpi_size, void *_dset, hid_t mem_type_id, hid_t mem_space_id,
-											hid_t file_space_id, hid_t plist_id, void *buf);
+H5_DLL char *H5FD__get_file_directory(void *h5file);
+H5_DLL herr_t H5FD__dataset_write_contiguous(
+    hid_t h5_file_id, haddr_t dataset_baseAddr, size_t dtype_extent,
+    int mpi_rank, int mpi_size, void *_dset, hid_t mem_type_id,
+    hid_t mem_space_id, hid_t file_space_id, hid_t plist_id, const void *buf);
+H5_DLL herr_t H5FD__dataset_read_contiguous(
+    hid_t h5_file_id, haddr_t dataset_baseAddr, size_t dtype_extent,
+    int mpi_rank, int mpi_size, void *_dset, hid_t mem_type_id,
+    hid_t mem_space_id, hid_t file_space_id, hid_t plist_id, void *buf);
 
-H5_DLL char * get_ioc_selection_criteria(ioc_selection_t *);
-H5_DLL void * get__subfiling_object(int64_t object_id);
+H5_DLL char *get_ioc_selection_criteria(ioc_selection_t *);
+H5_DLL void *get__subfiling_object(int64_t object_id);
 H5_DLL hid_t fid_map_to_context(hid_t h5_fid);
 
 #ifdef H5_ALLOW_VFD_DERIVED_TYPES
-H5_DLL int init__indep_io(void *_sf_context, int64_t *sf_source_data_offset, int64_t *sf_datasize,
-						  int64_t *sf_offset, MPI_Datatype *sf_dtype, int64_t offset,
-						  int64_t elements, int dtype_extent);
+H5_DLL int init__indep_io(void *_sf_context, int64_t *sf_source_data_offset,
+                          int64_t *sf_datasize, int64_t *sf_offset,
+                          MPI_Datatype *sf_dtype, int64_t offset,
+                          int64_t elements, int dtype_extent);
 #else
-/* return arguments are vector of vectors - function return is the length (depth) of the sub vectors.
- * Note that we don't need to include the MPI_Datatype return argument!
+/* return arguments are vector of vectors - function return is the length
+ * (depth) of the sub vectors. Note that we don't need to include the
+ * MPI_Datatype return argument!
  */
 #if 1
 H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
-						  int64_t *sf_source_data_offset,
-						  int64_t *sf_datasize,
-						  int64_t *f_offset,
-						  int64_t offset, int64_t elements, int dtype_extent);
+                          int64_t *sf_source_data_offset, int64_t *sf_datasize,
+                          int64_t *f_offset, int64_t offset, int64_t elements,
+                          int dtype_extent);
 #else
 H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
-						  int64_t sf_source_data_offset[depth][ioc_total],
-						  int64_t sf_datasize[depth][ioc_total],
-						  int64_t sf_offset[depth][ioc_total],
-						  int64_t offset, int64_t elements, int dtype_extent);
+                          int64_t sf_source_data_offset[depth][ioc_total],
+                          int64_t sf_datasize[depth][ioc_total],
+                          int64_t sf_offset[depth][ioc_total], int64_t offset,
+                          int64_t elements, int dtype_extent);
 #endif
 #endif
 
-H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int fd, int flags);
+H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int fd,
+                               int flags);
 H5_DLL int H5FD__close_subfiles(hid_t context_id);
-H5_DLL int H5FD__read_independent(hid_t H5FD__fid, int64_t offset, int64_t elements, int dtype_extent, void *data);
-H5_DLL int H5FD__write_independent(hid_t H5FD__fid, int64_t offset, int64_t elements, int dtype_extent, const void *data);
-H5_DLL herr_t H5FD__read_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[], void *bufs[] /* in */);
-H5_DLL herr_t H5FD__write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs, hsize_t sizes[], void *bufs[] /* in */);
+H5_DLL int H5FD__read_independent(hid_t H5FD__fid, int64_t offset,
+                                  int64_t elements, int dtype_extent,
+                                  void *data);
+H5_DLL int H5FD__write_independent(hid_t H5FD__fid, int64_t offset,
+                                   int64_t elements, int dtype_extent,
+                                   const void *data);
+H5_DLL herr_t H5FD__read_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs,
+                                hsize_t sizes[], void *bufs[] /* in */);
+H5_DLL herr_t H5FD__write_vector(hid_t h5_fid, hssize_t count, haddr_t *addrs,
+                                 hsize_t sizes[], void *bufs[] /* in */);
 H5_DLL int H5FD__truncate(hid_t h5_fid, haddr_t addr);
 H5_DLL int H5FD__shutdown_local_ioc(hid_t fid);
 H5_DLL void manage_client_logfile(int client_rank, int flag_value);
 H5_DLL int initialize_ioc_threads(void *sf_context);
-
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-

@@ -22,25 +22,25 @@
  * so BE CAREFUL about the paths we throw around?
  */
 
-#include "h5test.h"
 #include "cache_common.h"
 #include "genall5.h"
+#include "h5test.h"
 
 #include <mpi.h>
 #define H5_HAVE_SUBFILING_VFD
 #ifdef H5_HAVE_SUBFILING_VFD
 
-#include "H5FDsubfiling.h"    /* Private header for the subfiling VFD */
 #include "H5FDioc.h"
+#include "H5FDsubfiling.h" /* Private header for the subfiling VFD */
 
 #define BIG_DATABUFFER_SIZE 4096
 #define DATABUFFER_SIZE 128
-#define DSET_NAME_LEN   16
+#define DSET_NAME_LEN 16
 
 /* Parameters for the "large chunked dataset" writing */
 #define MAX_DSET_COUNT 255
-#define DSET_DIM        32
-#define CHUNK_DIM        8
+#define DSET_DIM 32
+#define CHUNK_DIM 8
 
 #define CONCURRENT_COUNT 3 /* Number of files in concurrent test */
 
@@ -56,13 +56,13 @@
 static unsigned int g_verbosity = DEFAULT_VERBOSITY;
 
 /* Macro for selective debug printing / logging */
-#define LOGPRINT(lvl, ...)                  \
-do {                                        \
-    if ((lvl) <= g_verbosity) {             \
-        fprintf(g_log_stream, __VA_ARGS__); \
-        fflush(g_log_stream);               \
-    }                                       \
-} while (0)
+#define LOGPRINT(lvl, ...)                                                     \
+  do {                                                                         \
+    if ((lvl) <= g_verbosity) {                                                \
+      fprintf(g_log_stream, __VA_ARGS__);                                      \
+      fflush(g_log_stream);                                                    \
+    }                                                                          \
+  } while (0)
 
 #define SUBFILING_RW_DIR "subfiling_rw/"
 #define SUBFILING_WO_DIR "subfiling_wo/"
@@ -74,34 +74,36 @@ static char mesg[MIRR_MESG_SIZE + 1];
 /* Convenience structure for passing file names via helper functions.
  */
 struct subfilingtest_filenames {
-    char rw[H5FD_SPLITTER_PATH_MAX+1];
-    char wo[H5FD_SPLITTER_PATH_MAX+1];
-    char log[H5FD_SPLITTER_PATH_MAX+1];
+  char rw[H5FD_SPLITTER_PATH_MAX + 1];
+  char wo[H5FD_SPLITTER_PATH_MAX + 1];
+  char log[H5FD_SPLITTER_PATH_MAX + 1];
 };
 
 static FILE *g_log_stream = NULL; /* initialized at runtime */
 
 static herr_t _verify_datasets(unsigned min_dset, unsigned max_dset,
-        hid_t *filespace_id, hid_t *dataset_id, hid_t memspace_id);
+                               hid_t *filespace_id, hid_t *dataset_id,
+                               hid_t memspace_id);
 
 static herr_t _create_chunking_ids(hid_t file_id, unsigned min_dset,
-        unsigned max_dset, hsize_t *chunk_dims, hsize_t *dset_dims,
-        hid_t *dataspace_ids, hid_t *filespace_ids, hid_t *dataset_ids,
-        hid_t *memspace_id);
+                                   unsigned max_dset, hsize_t *chunk_dims,
+                                   hsize_t *dset_dims, hid_t *dataspace_ids,
+                                   hid_t *filespace_ids, hid_t *dataset_ids,
+                                   hid_t *memspace_id);
 
 static herr_t _close_chunking_ids(unsigned min_dset, unsigned max_dset,
-        hid_t *dataspace_ids, hid_t *filespace_ids, hid_t *dataset_ids,
-        hid_t *memspace_id);
+                                  hid_t *dataspace_ids, hid_t *filespace_ids,
+                                  hid_t *dataset_ids, hid_t *memspace_id);
 
 static herr_t _populate_filepath(const char *dirname, const char *_basename,
-        hid_t fapl_id, char *path_out, hbool_t h5suffix);
+                                 hid_t fapl_id, char *path_out,
+                                 hbool_t h5suffix);
 
 static hid_t create_subfiling_ioc_fapl(const char *_basename,
-        struct subfilingtest_filenames *names);
+                                       struct subfilingtest_filenames *names);
 
 static void mybzero(void *dest, size_t size);
 
-
 /* ----------------------------------------------------------------------------
  * Function:   mybzero
  *
@@ -112,21 +114,19 @@ static void mybzero(void *dest, size_t size);
  *             2020-03-30
  * ----------------------------------------------------------------------------
  */
-static void
-mybzero(void *dest, size_t size)
-{
-    size_t i = 0;
-    char *s = NULL;
-    HDassert(dest != NULL);
-    s = (char *)dest;
-    for (i = 0; i < size; i++) {
-        *(s+i) = 0;
-    }
+static void mybzero(void *dest, size_t size) {
+  size_t i = 0;
+  char *s = NULL;
+  HDassert(dest != NULL);
+  s = (char *)dest;
+  for (i = 0; i < size; i++) {
+    *(s + i) = 0;
+  }
 } /* end mybzero() */
 
 /* ----------------------------------------------------------------------------
  * Function:   _get_subfiling_extension_info
- * 
+ *
  * Purpose:    This function  returns an instance of a driver_info_t
  *             structure (shown below)
  *                (byte)     (byte)    (byte)     (byte)
@@ -149,14 +149,8 @@ mybzero(void *dest, size_t size)
  * See: https://support.hdfgroup.org/HDF5/doc/H5.format.html#DrvInfoMessage
  * ----------------------------------------------------------------------------
  */
-static void *
-_get_subfiling_extension_info()
-{
-	return NULL;
-}
+static void *_get_subfiling_extension_info() { return NULL; }
 
-
-
 /* ----------------------------------------------------------------------------
  * Function:   _populate_filepath
  *
@@ -171,53 +165,40 @@ _get_subfiling_extension_info()
  *             2019-08-16
  * ----------------------------------------------------------------------------
  */
-static herr_t
-_populate_filepath(const char *dirname, const char *_basename, hid_t fapl_id,
-                   char *path_out, hbool_t h5suffix)
-{
-    char _path[H5FD_SPLITTER_PATH_MAX];
+static herr_t _populate_filepath(const char *dirname, const char *_basename,
+                                 hid_t fapl_id, char *path_out,
+                                 hbool_t h5suffix) {
+  char _path[H5FD_SPLITTER_PATH_MAX];
 
-    if ((_basename == NULL) ||
-        (*_basename == 0)   ||
-        (dirname == NULL)   ||
-        (*dirname == 0)     ||
-        (path_out == NULL))
-    {
-        TEST_ERROR;
-    }
+  if ((_basename == NULL) || (*_basename == 0) || (dirname == NULL) ||
+      (*dirname == 0) || (path_out == NULL)) {
+    TEST_ERROR;
+  }
 
-    if (HDsnprintf(_path, H5FD_SPLITTER_PATH_MAX, "%s%s%s", dirname,
-            (dirname[strlen(dirname)] == '/') ? "" : "/", /* slash iff needed */
-            _basename)
-        > H5FD_SPLITTER_PATH_MAX)
-    {
-        TEST_ERROR;
-    }
+  if (HDsnprintf(_path, H5FD_SPLITTER_PATH_MAX, "%s%s%s", dirname,
+                 (dirname[strlen(dirname)] == '/') ? ""
+                                                   : "/", /* slash iff needed */
+                 _basename) > H5FD_SPLITTER_PATH_MAX) {
+    TEST_ERROR;
+  }
 
-    if (h5suffix == TRUE) {
-        if (h5_fixname(_path, fapl_id, path_out,
-                H5FD_SPLITTER_PATH_MAX)
-            == NULL)
-        {
-            TEST_ERROR;
-        }
+  if (h5suffix == TRUE) {
+    if (h5_fixname(_path, fapl_id, path_out, H5FD_SPLITTER_PATH_MAX) == NULL) {
+      TEST_ERROR;
     }
-    else {
-        if (h5_fixname_no_suffix(_path, fapl_id, path_out,
-                H5FD_SPLITTER_PATH_MAX)
-            == NULL)
-        {
-            TEST_ERROR;
-        }
+  } else {
+    if (h5_fixname_no_suffix(_path, fapl_id, path_out,
+                             H5FD_SPLITTER_PATH_MAX) == NULL) {
+      TEST_ERROR;
     }
+  }
 
-    return SUCCEED;
+  return SUCCEED;
 
 error:
-    return FAIL;
+  return FAIL;
 } /* end _populate_filepath() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    build_paths
  *
@@ -230,37 +211,33 @@ error:
  *              2019-08-16
  * ---------------------------------------------------------------------------
  */
-static herr_t
-build_paths(
-        const char                  *_basename,
-        H5FD_subfiling_config_t     *subfiling_config,
-        struct subfilingtest_filenames *names)
-{
-    char baselogname[H5FD_SUBFILING_PATH_MAX +1];
-    char temp[H5FD_SUBFILING_PATH_MAX +1];
-	char *_realpath = NULL;
+static herr_t build_paths(const char *_basename,
+                          H5FD_subfiling_config_t *subfiling_config,
+                          struct subfilingtest_filenames *names) {
+  char baselogname[H5FD_SUBFILING_PATH_MAX + 1];
+  char temp[H5FD_SUBFILING_PATH_MAX + 1];
+  char *_realpath = NULL;
 
-    if (_populate_filepath(SUBFILING_RW_DIR, _basename,
-        subfiling_config->common.ioc_fapl_id, names->rw, TRUE) == FAIL)
-    {
-        TEST_ERROR;
-    }
-	if (names->rw) {
-        _realpath = HDrealpath(names->rw, temp);
-        strncpy(subfiling_config->common.file_path, temp, sizeof(subfiling_config->common.file_path));
-		strcpy(subfiling_config->common.file_dir, dirname(temp));
-	}
-    if (_basename == NULL || *_basename == 0)
-        return FAIL;
+  if (_populate_filepath(SUBFILING_RW_DIR, _basename,
+                         subfiling_config->common.ioc_fapl_id, names->rw,
+                         TRUE) == FAIL) {
+    TEST_ERROR;
+  }
+  if (names->rw) {
+    _realpath = HDrealpath(names->rw, temp);
+    strncpy(subfiling_config->common.file_path, temp,
+            sizeof(subfiling_config->common.file_path));
+    strcpy(subfiling_config->common.file_dir, dirname(temp));
+  }
+  if (_basename == NULL || *_basename == 0)
+    return FAIL;
 
-    return SUCCEED;
+  return SUCCEED;
 
 error:
-    return FAIL;
+  return FAIL;
 } /* end build_paths() */
 
-
-
 /* ---------------------------------------------------------------------------
  * Function:    test_fapl_configuration
  *
@@ -273,89 +250,85 @@ error:
  *              2019-03-12
  * ---------------------------------------------------------------------------
  */
-static int
-test_fapl_configuration(void)
-{
-    hid_t fapl_id, under_fapl;
-	H5FD_ioc_config_t ioc_config;
-    H5FD_subfiling_config_t subfiling_conf;
+static int test_fapl_configuration(void) {
+  hid_t fapl_id, under_fapl;
+  H5FD_ioc_config_t ioc_config;
+  H5FD_subfiling_config_t subfiling_conf;
 
+  TESTING("Subfiling fapl configuration (set/get)");
 
-    TESTING("Subfiling fapl configuration (set/get)");
+  memset(&ioc_config, 0, sizeof(ioc_config));
+  memset(&subfiling_conf, 0, sizeof(subfiling_conf));
 
-	memset(&ioc_config, 0, sizeof(ioc_config));
-	memset(&subfiling_conf, 0, sizeof(subfiling_conf));
+  under_fapl = H5Pcreate(H5P_FILE_ACCESS);
+  if (H5I_INVALID_HID == under_fapl) {
+    TEST_ERROR;
+  }
+  /* Get IOC VFD defaults */
+  if (H5Pget_fapl_ioc(under_fapl, &ioc_config) == FAIL) {
+    TEST_ERROR;
+  }
+  /* Now we can set the fapl. */
+  if (H5Pset_fapl_ioc(under_fapl, &ioc_config) == FAIL) {
+    TEST_ERROR;
+  }
 
-    under_fapl = H5Pcreate(H5P_FILE_ACCESS);
-    if (H5I_INVALID_HID == under_fapl) {
-        TEST_ERROR;
-    }
-    /* Get IOC VFD defaults */
-    if (H5Pget_fapl_ioc(under_fapl, &ioc_config) == FAIL) {
-        TEST_ERROR;
-	}
-	/* Now we can set the fapl. */
-    if (H5Pset_fapl_ioc(under_fapl, &ioc_config) == FAIL) {
-        TEST_ERROR;
-    }
+  fapl_id = H5Pcreate(H5P_FILE_ACCESS);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
+  /* The get_fapl will fill in the default values */
+  if (H5Pget_fapl_subfiling(fapl_id, &subfiling_conf) == FAIL) {
+    TEST_ERROR;
+  }
+  /* Now we can set the fapl. */
+  if (H5Pset_fapl_subfiling(under_fapl, &subfiling_conf) == FAIL) {
+    TEST_ERROR;
+  }
 
-    fapl_id = H5Pcreate(H5P_FILE_ACCESS);
-    if (H5I_INVALID_HID == fapl_id) {
-        TEST_ERROR;
-    }
-	/* The get_fapl will fill in the default values */
-    if (H5Pget_fapl_subfiling(fapl_id, &subfiling_conf) == FAIL) {
-        TEST_ERROR;
-    }
-	/* Now we can set the fapl. */
-    if (H5Pset_fapl_subfiling(under_fapl, &subfiling_conf) == FAIL) {
-        TEST_ERROR;
-    }
+  if (H5Pclose(under_fapl) == FAIL) {
+    TEST_ERROR;
+  }
+  if (H5Pclose(fapl_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    if (H5Pclose(under_fapl) == FAIL) {
-        TEST_ERROR;
-    }
-    if (H5Pclose(fapl_id) == FAIL) {
-        TEST_ERROR;
-    }
-
-    PASSED();
-    return 0;
+  PASSED();
+  return 0;
 
 error:
-    if (H5I_INVALID_HID != under_fapl) {
-        (void)H5Pclose(under_fapl);
-    }
-    if (H5I_INVALID_HID != fapl_id) {
-        (void)H5Pclose(fapl_id);
-    }
+  if (H5I_INVALID_HID != under_fapl) {
+    (void)H5Pclose(under_fapl);
+  }
+  if (H5I_INVALID_HID != fapl_id) {
+    (void)H5Pclose(fapl_id);
+  }
 
-    return -1;
+  return -1;
 } /* end test_fapl_configuration() */
 
+#define PRINT_BUFFER_DIFF(act, exp, len)                                       \
+  do {                                                                         \
+    size_t _x = 0;                                                             \
+    while ((act)[_x] == (exp)[_x]) {                                           \
+      _x++;                                                                    \
+    }                                                                          \
+    if (_x != (len)) {                                                         \
+      size_t _y = 0;                                                           \
+      HDprintf("First bytes differ at %zu\n", _x);                             \
+      HDprintf("exp  ");                                                       \
+      for (_y = _x; _y < (len); _y++) {                                        \
+        HDprintf("%02X", (unsigned char)(exp)[_y]);                            \
+      }                                                                        \
+      HDprintf("\nact  ");                                                     \
+      for (_y = _x; _y < (len); _y++) {                                        \
+        HDprintf("%02X", (unsigned char)(act)[_y]);                            \
+      }                                                                        \
+      HDprintf("\n");                                                          \
+      s                                                                        \
+    }                                                                          \
+  } while (0); /* end PRINT_BUFFER_DIFF */
 
-
-#define PRINT_BUFFER_DIFF(act, exp, len) do {                                 \
-    size_t _x = 0;                                                            \
-    while ((act)[_x] == (exp)[_x]) {                                          \
-        _x++;                                                                 \
-    }                                                                         \
-    if (_x != (len)) {                                                        \
-        size_t _y = 0;                                                        \
-        HDprintf("First bytes differ at %zu\n", _x);                          \
-        HDprintf("exp  ");                                                    \
-        for (_y = _x; _y < (len); _y++) {                                     \
-            HDprintf("%02X", (unsigned char)(exp)[_y]);                       \
-        }                                                                     \
-        HDprintf("\nact  ");                                                  \
-        for (_y = _x; _y < (len); _y++) {                                     \
-            HDprintf("%02X", (unsigned char)(act)[_y]);                       \
-        }                                                                     \
-        HDprintf("\n");                                                       \
-s    }                                                                         \
-} while (0); /* end PRINT_BUFFER_DIFF */
-
-
 #if 0
 /* ---------------------------------------------------------------------------
  * Function:    test_xmit_encode_decode
@@ -1257,8 +1230,6 @@ error:
 
 #endif
 
-
-
 /* ---------------------------------------------------------------------------
  * Function:    create_subfiling_ioc_fapl
  *
@@ -1277,73 +1248,74 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static hid_t
-create_subfiling_ioc_fapl(const char *_basename, struct subfilingtest_filenames *names)
-{
-    hid_t                    ret_value  = H5I_INVALID_HID;
-    hid_t                    ioc_fapl   = H5I_INVALID_HID;
-    H5FD_ioc_config_t        ioc_config = {0,};
-    H5FD_subfiling_config_t  subfiling_conf = {0,};
+static hid_t create_subfiling_ioc_fapl(const char *_basename,
+                                       struct subfilingtest_filenames *names) {
+  hid_t ret_value = H5I_INVALID_HID;
+  hid_t ioc_fapl = H5I_INVALID_HID;
+  H5FD_ioc_config_t ioc_config = {
+      0,
+  };
+  H5FD_subfiling_config_t subfiling_conf = {
+      0,
+  };
 
-    if (_basename == NULL || *_basename == '\0') {
-        TEST_ERROR;
-    }
+  if (_basename == NULL || *_basename == '\0') {
+    TEST_ERROR;
+  }
 
-    ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
-    if (H5I_INVALID_HID == ioc_fapl) {
-        TEST_ERROR;
-    }
+  ioc_fapl = H5Pcreate(H5P_FILE_ACCESS);
+  if (H5I_INVALID_HID == ioc_fapl) {
+    TEST_ERROR;
+  }
 
-    /* Prepare the subfiling fapl */
-    ret_value = H5Pcreate(H5P_FILE_ACCESS);
-    if (H5I_INVALID_HID == ret_value) {
-        TEST_ERROR;
+  /* Prepare the subfiling fapl */
+  ret_value = H5Pcreate(H5P_FILE_ACCESS);
+  if (H5I_INVALID_HID == ret_value) {
+    TEST_ERROR;
+  }
+  /* Get subfiling VFD defaults */
+  if (H5Pget_fapl_subfiling(ret_value, &subfiling_conf) == FAIL) {
+    TEST_ERROR;
+  }
+  if (subfiling_conf.require_ioc) {
+    /* Get IOC VFD defaults */
+    if (H5Pget_fapl_ioc(ioc_fapl, &ioc_config) == FAIL) {
+      TEST_ERROR;
     }
-    /* Get subfiling VFD defaults */
-    if (H5Pget_fapl_subfiling(ret_value,&subfiling_conf) == FAIL) {
-        TEST_ERROR;
+    /* Now we can set the IOC fapl. */
+    if (H5Pset_fapl_ioc(ioc_fapl, &ioc_config) == FAIL) {
+      TEST_ERROR;
     }
-    if (subfiling_conf.require_ioc) {
-        /* Get IOC VFD defaults */
-        if (H5Pget_fapl_ioc(ioc_fapl, &ioc_config) == FAIL) {
-            TEST_ERROR;
-        }
-        /* Now we can set the IOC fapl. */
-        if (H5Pset_fapl_ioc(ioc_fapl, &ioc_config) == FAIL) {
-            TEST_ERROR;
-        }
+  } else {
+    if (H5Pset_fapl_sec2(ioc_fapl) == FAIL) {
+      TEST_ERROR;
     }
-	else {
-        if (H5Pset_fapl_sec2(ioc_fapl) == FAIL) {
-            TEST_ERROR;
-        }
-	}
+  }
 
-    /* Assign the IOC fapl as the underlying VPD */
-	subfiling_conf.common.ioc_fapl_id = ioc_fapl;
+  /* Assign the IOC fapl as the underlying VPD */
+  subfiling_conf.common.ioc_fapl_id = ioc_fapl;
 
-    /* Fill the file paths for the current file create/open */
-    if (build_paths(_basename, &subfiling_conf, names) < 0) {
-        TEST_ERROR;
-    }
+  /* Fill the file paths for the current file create/open */
+  if (build_paths(_basename, &subfiling_conf, names) < 0) {
+    TEST_ERROR;
+  }
 
-	/* Now we can set the SUBFILING fapl befor returning. */
-    if (H5Pset_fapl_subfiling(ret_value, &subfiling_conf) == FAIL) {
-        TEST_ERROR;
-    }
+  /* Now we can set the SUBFILING fapl befor returning. */
+  if (H5Pset_fapl_subfiling(ret_value, &subfiling_conf) == FAIL) {
+    TEST_ERROR;
+  }
 
-    return ret_value;
+  return ret_value;
 
 error:
-    if (H5I_INVALID_HID != ioc_fapl)
-       (void)H5Pclose(ioc_fapl);
-    if (H5I_INVALID_HID != ret_value)
-        (void)H5Pclose(ret_value);
+  if (H5I_INVALID_HID != ioc_fapl)
+    (void)H5Pclose(ioc_fapl);
+  if (H5I_INVALID_HID != ret_value)
+    (void)H5Pclose(ret_value);
 
-    return H5I_INVALID_HID;
+  return H5I_INVALID_HID;
 } /* end create_subfiling_ioc_fapl() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_create_and_close
  *
@@ -1360,55 +1332,52 @@ error:
  *              2019-12-17
  * ---------------------------------------------------------------------------
  */
-static int
-test_create_and_close(void)
-{
-    struct subfilingtest_filenames names;
-    hid_t file_id = H5I_INVALID_HID;
-    hid_t fapl_id = H5P_DEFAULT;
+static int test_create_and_close(void) {
+  struct subfilingtest_filenames names;
+  hid_t file_id = H5I_INVALID_HID;
+  hid_t fapl_id = H5P_DEFAULT;
 
-    TESTING("File creation and immediate close");
+  TESTING("File creation and immediate close");
 
-    /* Create FAPL for [IO Concentrator|subfiling]
-     */
-    fapl_id = create_subfiling_ioc_fapl("basic_create", &names);
-    if (H5I_INVALID_HID == fapl_id) {
-        TEST_ERROR;
+  /* Create FAPL for [IO Concentrator|subfiling]
+   */
+  fapl_id = create_subfiling_ioc_fapl("basic_create", &names);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* TEST: Create and Close */
+
+  file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* Standard cleanup */
+
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  if (fapl_id != H5P_DEFAULT && fapl_id >= 0) {
+    if (H5Pclose(fapl_id) == FAIL) {
+      TEST_ERROR;
     }
+  }
 
-    /* -------------------- */
-    /* TEST: Create and Close */
-
-    file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
-
-    /* -------------------- */
-    /* Standard cleanup */
-
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-    if (fapl_id != H5P_DEFAULT && fapl_id >= 0) {
-        if (H5Pclose(fapl_id) == FAIL) {
-            TEST_ERROR;
-        }
-    }
-
-    PASSED();
-    return 0;
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY{
-        (void)H5Fclose(file_id);
-        (void)H5Pclose(fapl_id);
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    (void)H5Fclose(file_id);
+    (void)H5Pclose(fapl_id);
+  }
+  H5E_END_TRY;
+  return -1;
 } /* end test_create_and_close() */
 
-
-
 /* ----------------------------------------------------------------------------
  * Function:    create_datasets
  *
@@ -1424,130 +1393,111 @@ error:
  *              2019-08-14
  * ----------------------------------------------------------------------------
  */
-static herr_t
-create_datasets(hid_t    file_id,
-                unsigned min_dset,
-                unsigned max_dset)
-{
-    hid_t       dataspace_ids[MAX_DSET_COUNT + 1];
-    hid_t       dataset_ids[MAX_DSET_COUNT + 1];
-    hid_t       filespace_ids[MAX_DSET_COUNT + 1];
-    int         data_chunk[CHUNK_DIM][CHUNK_DIM];
-    unsigned int        i, j, k, l, m;
-    hsize_t     offset[2];
-    hid_t       memspace_id   = H5I_INVALID_HID;
-    hsize_t     a_size[2]     = {CHUNK_DIM, CHUNK_DIM};
-    hsize_t     chunk_dims[2] = {CHUNK_DIM, CHUNK_DIM};
-    hsize_t     dset_dims[2]  = {DSET_DIM, DSET_DIM};
+static herr_t create_datasets(hid_t file_id, unsigned min_dset,
+                              unsigned max_dset) {
+  hid_t dataspace_ids[MAX_DSET_COUNT + 1];
+  hid_t dataset_ids[MAX_DSET_COUNT + 1];
+  hid_t filespace_ids[MAX_DSET_COUNT + 1];
+  int data_chunk[CHUNK_DIM][CHUNK_DIM];
+  unsigned int i, j, k, l, m;
+  hsize_t offset[2];
+  hid_t memspace_id = H5I_INVALID_HID;
+  hsize_t a_size[2] = {CHUNK_DIM, CHUNK_DIM};
+  hsize_t chunk_dims[2] = {CHUNK_DIM, CHUNK_DIM};
+  hsize_t dset_dims[2] = {DSET_DIM, DSET_DIM};
 
-    HDassert(file_id >= 0);
-    HDassert(min_dset <= max_dset);
-    HDassert(max_dset <= MAX_DSET_COUNT);
+  HDassert(file_id >= 0);
+  HDassert(min_dset <= max_dset);
+  HDassert(max_dset <= MAX_DSET_COUNT);
 
-    LOGPRINT(2, "create_dataset()\n");
+  LOGPRINT(2, "create_dataset()\n");
 
-    /* ---------------------------------
-     * "Clear" ID arrays
-     */
+  /* ---------------------------------
+   * "Clear" ID arrays
+   */
 
-    for (i = 0; i < MAX_DSET_COUNT; i++) {
-        LOGPRINT(3, "clearing IDs [%d]\n", i);
-        dataspace_ids[i] = H5I_INVALID_HID;
-        dataset_ids[i] = H5I_INVALID_HID;
-        filespace_ids[i] = H5I_INVALID_HID;
-    }
+  for (i = 0; i < MAX_DSET_COUNT; i++) {
+    LOGPRINT(3, "clearing IDs [%d]\n", i);
+    dataspace_ids[i] = H5I_INVALID_HID;
+    dataset_ids[i] = H5I_INVALID_HID;
+    filespace_ids[i] = H5I_INVALID_HID;
+  }
 
-    /* ---------------------------------
-     * Generate dataspace, dataset, and 'filespace' IDs
-     */
+  /* ---------------------------------
+   * Generate dataspace, dataset, and 'filespace' IDs
+   */
 
-    if (_create_chunking_ids(file_id, min_dset, max_dset, chunk_dims,
-            dset_dims, dataspace_ids, filespace_ids, dataset_ids, &memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_create_chunking_ids(file_id, min_dset, max_dset, chunk_dims, dset_dims,
+                           dataspace_ids, filespace_ids, dataset_ids,
+                           &memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    /* ---------------------------------
-     * Initialize (write) all datasets in a "round robin"...
-     * for a given chunk 'location', write chunk data to each dataset.
-     */
+  /* ---------------------------------
+   * Initialize (write) all datasets in a "round robin"...
+   * for a given chunk 'location', write chunk data to each dataset.
+   */
 
-    for (i = 0; i < DSET_DIM; i += CHUNK_DIM)
-    {
-        LOGPRINT(3, "i: %d\n", i);
-        for (j = 0; j < DSET_DIM; j += CHUNK_DIM)
-        {
-            LOGPRINT(3, "  j: %d\n", j);
-            for (m = min_dset; m <= max_dset; m++)
-            {
-                LOGPRINT(3, "    m: %d\n", m);
-                for (k = 0; k < CHUNK_DIM; k++)
-                {
-                    for (l = 0; l < CHUNK_DIM; l++)
-                    {
-                        data_chunk[k][l] = (int)((DSET_DIM * DSET_DIM * m) +
-                                                 (DSET_DIM * (i + k)) + j + l);
-                        LOGPRINT(3, "      data_chunk[%d][%d]: %d\n",
-                                 k, l, data_chunk[k][l]);
-                    }
-                }
-
-                /* select on disk hyperslab */
-                offset[0] = (hsize_t)i;
-                offset[1] = (hsize_t)j;
-                LOGPRINT(3, "    H5Sselect_hyperslab()\n");
-                if (H5Sselect_hyperslab(filespace_ids[m], H5S_SELECT_SET,
-                        offset, NULL, a_size, NULL)
-                    < 0)
-                {
-                    TEST_ERROR;
-                }
-
-                LOGPRINT(3, "    H5Dwrite()\n");
-                if (H5Dwrite(dataset_ids[m], H5T_NATIVE_INT, memspace_id,
-                        filespace_ids[m], H5P_DEFAULT, data_chunk)
-                    < 0)
-                {
-                    TEST_ERROR;
-                }
-
-            }
+  for (i = 0; i < DSET_DIM; i += CHUNK_DIM) {
+    LOGPRINT(3, "i: %d\n", i);
+    for (j = 0; j < DSET_DIM; j += CHUNK_DIM) {
+      LOGPRINT(3, "  j: %d\n", j);
+      for (m = min_dset; m <= max_dset; m++) {
+        LOGPRINT(3, "    m: %d\n", m);
+        for (k = 0; k < CHUNK_DIM; k++) {
+          for (l = 0; l < CHUNK_DIM; l++) {
+            data_chunk[k][l] =
+                (int)((DSET_DIM * DSET_DIM * m) + (DSET_DIM * (i + k)) + j + l);
+            LOGPRINT(3, "      data_chunk[%d][%d]: %d\n", k, l,
+                     data_chunk[k][l]);
+          }
         }
+
+        /* select on disk hyperslab */
+        offset[0] = (hsize_t)i;
+        offset[1] = (hsize_t)j;
+        LOGPRINT(3, "    H5Sselect_hyperslab()\n");
+        if (H5Sselect_hyperslab(filespace_ids[m], H5S_SELECT_SET, offset, NULL,
+                                a_size, NULL) < 0) {
+          TEST_ERROR;
+        }
+
+        LOGPRINT(3, "    H5Dwrite()\n");
+        if (H5Dwrite(dataset_ids[m], H5T_NATIVE_INT, memspace_id,
+                     filespace_ids[m], H5P_DEFAULT, data_chunk) < 0) {
+          TEST_ERROR;
+        }
+      }
     }
+  }
 
-    /* ---------------------------------
-     * Read and verify data from datasets
-     */
+  /* ---------------------------------
+   * Read and verify data from datasets
+   */
 
-    if (_verify_datasets(min_dset, max_dset, filespace_ids, dataset_ids,
-                memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_verify_datasets(min_dset, max_dset, filespace_ids, dataset_ids,
+                       memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    /* ---------------------------------
-     * Cleanup
-     */
+  /* ---------------------------------
+   * Cleanup
+   */
 
-    if (_close_chunking_ids(min_dset, max_dset, dataspace_ids, filespace_ids,
-                dataset_ids, &memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_close_chunking_ids(min_dset, max_dset, dataspace_ids, filespace_ids,
+                          dataset_ids, &memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    return SUCCEED;
+  return SUCCEED;
 
 error:
-    (void)_close_chunking_ids(min_dset, max_dset, dataspace_ids,
-                filespace_ids, dataset_ids, &memspace_id);
-    LOGPRINT(1, "create_datasets() FAILED\n");
-    return FAIL;
+  (void)_close_chunking_ids(min_dset, max_dset, dataspace_ids, filespace_ids,
+                            dataset_ids, &memspace_id);
+  LOGPRINT(1, "create_datasets() FAILED\n");
+  return FAIL;
 } /* end create_datasets() */
 
-
 /* ----------------------------------------------------------------------------
  * Function:   _create_chunking_ids
  *
@@ -1559,113 +1509,101 @@ error:
  *             2019
  * ----------------------------------------------------------------------------
  */
-static herr_t
-_create_chunking_ids(hid_t     file_id,
-                     unsigned  min_dset,
-                     unsigned  max_dset,
-                     hsize_t  *chunk_dims,
-                     hsize_t  *dset_dims,
-                     hid_t    *dataspace_ids,
-                     hid_t    *filespace_ids,
-                     hid_t    *dataset_ids,
-                     hid_t    *memspace_id)
-{
-    char     dset_name[DSET_NAME_LEN + 1];
-    unsigned m         = 0;
-    hid_t    dcpl_id   = H5I_INVALID_HID;
+static herr_t _create_chunking_ids(hid_t file_id, unsigned min_dset,
+                                   unsigned max_dset, hsize_t *chunk_dims,
+                                   hsize_t *dset_dims, hid_t *dataspace_ids,
+                                   hid_t *filespace_ids, hid_t *dataset_ids,
+                                   hid_t *memspace_id) {
+  char dset_name[DSET_NAME_LEN + 1];
+  unsigned m = 0;
+  hid_t dcpl_id = H5I_INVALID_HID;
 
-    LOGPRINT(2, "_create_chunking_ids()\n");
+  LOGPRINT(2, "_create_chunking_ids()\n");
 
-    /* --------------------
-     * Create chunking DCPL
-     */
+  /* --------------------
+   * Create chunking DCPL
+   */
 
-    dcpl_id = H5Pcreate(H5P_DATASET_CREATE);
-    if (dcpl_id < 0) {
-        TEST_ERROR;
+  dcpl_id = H5Pcreate(H5P_DATASET_CREATE);
+  if (dcpl_id < 0) {
+    TEST_ERROR;
+  }
+  if (H5Pset_chunk(dcpl_id, 2, chunk_dims) == FAIL) {
+    TEST_ERROR;
+  }
+
+  /* --------------------
+   * Create dataspace IDs
+   */
+
+  for (m = min_dset; m <= max_dset; m++) {
+    dataspace_ids[m] = H5Screate_simple(2, dset_dims, NULL);
+    if (dataspace_ids[m] < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to create dataspace ID %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
-    if (H5Pset_chunk(dcpl_id, 2, chunk_dims) == FAIL) {
-        TEST_ERROR;
-    }
+  }
 
-    /* --------------------
-     * Create dataspace IDs
-     */
+  /* --------------------
+   * Create dataset IDs
+   */
 
-    for (m = min_dset; m <= max_dset; m++) {
-        dataspace_ids[m] = H5Screate_simple(2, dset_dims, NULL);
-        if (dataspace_ids[m] < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to create dataspace ID %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
-    }
-
-    /* --------------------
-     * Create dataset IDs
-     */
-
-    for (m = min_dset; m <= max_dset; m++) {
-        if (HDsnprintf(dset_name, DSET_NAME_LEN, "/dset%03d", m)
-            > DSET_NAME_LEN)
-        {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to compose dset name %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
-
-        dataset_ids[m] = H5Dcreate(file_id, dset_name, H5T_STD_I32BE,
-                dataspace_ids[m], H5P_DEFAULT, dcpl_id, H5P_DEFAULT);
-        if (dataset_ids[m] < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to create dset ID %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
+  for (m = min_dset; m <= max_dset; m++) {
+    if (HDsnprintf(dset_name, DSET_NAME_LEN, "/dset%03d", m) > DSET_NAME_LEN) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to compose dset name %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
 
-    /* --------------------
-     * Get file space IDs
-     */
-
-    for (m = min_dset; m <= max_dset; m++) {
-        filespace_ids[m] = H5Dget_space(dataset_ids[m]);
-        if (filespace_ids[m] < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to create filespace ID %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
+    dataset_ids[m] =
+        H5Dcreate(file_id, dset_name, H5T_STD_I32BE, dataspace_ids[m],
+                  H5P_DEFAULT, dcpl_id, H5P_DEFAULT);
+    if (dataset_ids[m] < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to create dset ID %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
+  }
 
-    /* --------------------
-     * Create mem space to be used to read and write chunks
-     */
+  /* --------------------
+   * Get file space IDs
+   */
 
-    *memspace_id = H5Screate_simple(2, chunk_dims, NULL);
-    if (*memspace_id < 0) {
-        TEST_ERROR;
+  for (m = min_dset; m <= max_dset; m++) {
+    filespace_ids[m] = H5Dget_space(dataset_ids[m]);
+    if (filespace_ids[m] < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to create filespace ID %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
+  }
 
-    /* --------------------
-     * Clean up the DCPL, even if there were errors before
-     */
+  /* --------------------
+   * Create mem space to be used to read and write chunks
+   */
 
-    if (dcpl_id != H5P_DEFAULT && dcpl_id != H5I_INVALID_HID) {
-        if (H5Pclose(dcpl_id) == FAIL) {
-            TEST_ERROR;
-        }
+  *memspace_id = H5Screate_simple(2, chunk_dims, NULL);
+  if (*memspace_id < 0) {
+    TEST_ERROR;
+  }
+
+  /* --------------------
+   * Clean up the DCPL, even if there were errors before
+   */
+
+  if (dcpl_id != H5P_DEFAULT && dcpl_id != H5I_INVALID_HID) {
+    if (H5Pclose(dcpl_id) == FAIL) {
+      TEST_ERROR;
     }
+  }
 
-    return SUCCEED;
+  return SUCCEED;
 
 error:
-    if (dcpl_id != H5P_DEFAULT && dcpl_id != H5I_INVALID_HID) {
-        (void)H5Pclose(dcpl_id);
-    }
-    LOGPRINT(1, "_create_chunking_ids() FAILED\n");
-    return FAIL;
+  if (dcpl_id != H5P_DEFAULT && dcpl_id != H5I_INVALID_HID) {
+    (void)H5Pclose(dcpl_id);
+  }
+  LOGPRINT(1, "_create_chunking_ids() FAILED\n");
+  return FAIL;
 } /* end _create_chunking_ids() */
 
-
 /* ----------------------------------------------------------------------------
  * Function:    _open_chunking_ids
  *
@@ -1677,71 +1615,60 @@ error:
  *              2019
  * ----------------------------------------------------------------------------
  */
-static herr_t
-_open_chunking_ids(
-        hid_t     file_id,
-        unsigned  min_dset,
-        unsigned  max_dset,
-        hsize_t  *chunk_dims,
-        hid_t    *filespace_ids,
-        hid_t    *dataset_ids,
-        hid_t    *memspace_id)
-{
-    char     dset_name[DSET_NAME_LEN+1];
-    unsigned m = 0;
+static herr_t _open_chunking_ids(hid_t file_id, unsigned min_dset,
+                                 unsigned max_dset, hsize_t *chunk_dims,
+                                 hid_t *filespace_ids, hid_t *dataset_ids,
+                                 hid_t *memspace_id) {
+  char dset_name[DSET_NAME_LEN + 1];
+  unsigned m = 0;
 
-    LOGPRINT(2, "_open_chunking_ids()\n");
+  LOGPRINT(2, "_open_chunking_ids()\n");
 
-    /* --------------------
-     * Open dataset IDs
-     */
+  /* --------------------
+   * Open dataset IDs
+   */
 
-    for (m = min_dset; m <= max_dset; m++) {
-        if (HDsnprintf(dset_name, DSET_NAME_LEN, "/dset%03d", m)
-            > DSET_NAME_LEN)
-        {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to compose dset name %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
-
-        dataset_ids[m] = H5Dopen2(file_id, dset_name, H5P_DEFAULT);
-        if (dataset_ids[m] < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to open dset ID %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
+  for (m = min_dset; m <= max_dset; m++) {
+    if (HDsnprintf(dset_name, DSET_NAME_LEN, "/dset%03d", m) > DSET_NAME_LEN) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to compose dset name %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
 
-    /* --------------------
-     * Open filespace IDs
-     */
-
-    for (m = min_dset; m <= max_dset; m++) {
-        filespace_ids[m] = H5Dget_space(dataset_ids[m]);
-        if (filespace_ids[m] < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                    "unable to get filespace ID %d\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
+    dataset_ids[m] = H5Dopen2(file_id, dset_name, H5P_DEFAULT);
+    if (dataset_ids[m] < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to open dset ID %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
+  }
 
-    /* --------------------
-     * Create mem space to be used to read and write chunks
-     */
+  /* --------------------
+   * Open filespace IDs
+   */
 
-    *memspace_id = H5Screate_simple(2, chunk_dims, NULL);
-    if (*memspace_id < 0) {
-        TEST_ERROR;
+  for (m = min_dset; m <= max_dset; m++) {
+    filespace_ids[m] = H5Dget_space(dataset_ids[m]);
+    if (filespace_ids[m] < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to get filespace ID %d\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
+  }
 
-    return SUCCEED;
+  /* --------------------
+   * Create mem space to be used to read and write chunks
+   */
+
+  *memspace_id = H5Screate_simple(2, chunk_dims, NULL);
+  if (*memspace_id < 0) {
+    TEST_ERROR;
+  }
+
+  return SUCCEED;
 
 error:
-    LOGPRINT(1, "_open_chunking_ids() FAILED\n");
-    return FAIL;
+  LOGPRINT(1, "_open_chunking_ids() FAILED\n");
+  return FAIL;
 } /* end _open_chunking_ids() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    _close_chunking_ids
  *
@@ -1755,53 +1682,43 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static herr_t
-_close_chunking_ids(unsigned min_dset,
-                    unsigned max_dset,
-                    hid_t *dataspace_ids,
-                    hid_t *filespace_ids,
-                    hid_t *dataset_ids,
-                    hid_t *memspace_id)
-{
-    unsigned m;
+static herr_t _close_chunking_ids(unsigned min_dset, unsigned max_dset,
+                                  hid_t *dataspace_ids, hid_t *filespace_ids,
+                                  hid_t *dataset_ids, hid_t *memspace_id) {
+  unsigned m;
 
-    LOGPRINT(2, "_close_chunking_ids()\n");
+  LOGPRINT(2, "_close_chunking_ids()\n");
 
-    for (m = min_dset; m <= max_dset; m++) {
-        LOGPRINT(3, "closing ids[%d]\n", m);
-        if (dataspace_ids) {
-            if (H5Sclose(dataspace_ids[m]) < 0) {
-                HDsnprintf(mesg, MIRR_MESG_SIZE,
-                        "unable to close dataspace_id[%d]\n", m);
-                FAIL_PUTS_ERROR(mesg);
-            }
-        }
-        if (H5Dclose(dataset_ids[m]) < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                        "unable to close dataset_id[%d]\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
-        if (H5Sclose(filespace_ids[m]) < 0) {
-            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                        "unable to close filespace_id[%d]\n", m);
-            FAIL_PUTS_ERROR(mesg);
-        }
+  for (m = min_dset; m <= max_dset; m++) {
+    LOGPRINT(3, "closing ids[%d]\n", m);
+    if (dataspace_ids) {
+      if (H5Sclose(dataspace_ids[m]) < 0) {
+        HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to close dataspace_id[%d]\n",
+                   m);
+        FAIL_PUTS_ERROR(mesg);
+      }
     }
-
-    if ( (*memspace_id != H5I_INVALID_HID) &&
-         (H5Sclose(*memspace_id) < 0) )
-    {
-        TEST_ERROR;
+    if (H5Dclose(dataset_ids[m]) < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to close dataset_id[%d]\n", m);
+      FAIL_PUTS_ERROR(mesg);
     }
+    if (H5Sclose(filespace_ids[m]) < 0) {
+      HDsnprintf(mesg, MIRR_MESG_SIZE, "unable to close filespace_id[%d]\n", m);
+      FAIL_PUTS_ERROR(mesg);
+    }
+  }
 
-    return SUCCEED;
+  if ((*memspace_id != H5I_INVALID_HID) && (H5Sclose(*memspace_id) < 0)) {
+    TEST_ERROR;
+  }
+
+  return SUCCEED;
 
 error:
-    LOGPRINT(1, "_close_chunking_ids() FAILED\n");
-    return FAIL;
+  LOGPRINT(1, "_close_chunking_ids() FAILED\n");
+  return FAIL;
 } /* end _close_chunking_ids() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    _verify_datasets
  *
@@ -1814,77 +1731,60 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static herr_t
-_verify_datasets(unsigned  min_dset,
-                 unsigned  max_dset,
-                 hid_t    *filespace_ids,
-                 hid_t    *dataset_ids,
-                 hid_t     memspace_id)
-{
-    unsigned i, j, k, l, m;
-    int      data_chunk[CHUNK_DIM][CHUNK_DIM];
-    hsize_t  offset[2];
-    hsize_t  a_size[2] = {CHUNK_DIM, CHUNK_DIM};
+static herr_t _verify_datasets(unsigned min_dset, unsigned max_dset,
+                               hid_t *filespace_ids, hid_t *dataset_ids,
+                               hid_t memspace_id) {
+  unsigned i, j, k, l, m;
+  int data_chunk[CHUNK_DIM][CHUNK_DIM];
+  hsize_t offset[2];
+  hsize_t a_size[2] = {CHUNK_DIM, CHUNK_DIM};
 
-    LOGPRINT(2, "_verify_datasets()\n");
+  LOGPRINT(2, "_verify_datasets()\n");
 
-    for (i = 0; i < DSET_DIM; i += CHUNK_DIM)
-    {
-        LOGPRINT(3, "i: %d\n", i);
-        for (j = 0; j < DSET_DIM; j += CHUNK_DIM)
-        {
-            LOGPRINT(3, "  j: %d\n", j);
-            for (m = min_dset; m <= max_dset; m++)
-            {
-                LOGPRINT(3, "    m: %d\n", m);
+  for (i = 0; i < DSET_DIM; i += CHUNK_DIM) {
+    LOGPRINT(3, "i: %d\n", i);
+    for (j = 0; j < DSET_DIM; j += CHUNK_DIM) {
+      LOGPRINT(3, "  j: %d\n", j);
+      for (m = min_dset; m <= max_dset; m++) {
+        LOGPRINT(3, "    m: %d\n", m);
 
-                /* select on disk hyperslab */
-                offset[0] = (hsize_t)i;
-                offset[1] = (hsize_t)j;
-                if (H5Sselect_hyperslab(filespace_ids[m], H5S_SELECT_SET,
-                        offset, NULL, a_size, NULL)
-                    < 0)
-                {
-                    TEST_ERROR;
-                }
-
-                if (H5Dread(dataset_ids[m], H5T_NATIVE_INT, memspace_id,
-                        filespace_ids[m], H5P_DEFAULT, data_chunk)
-                    < 0)
-                {
-                    HDsnprintf(mesg, MIRR_MESG_SIZE,
-                               "      H5Dread() [%d][%d][%d]\n",
-                               i, j, m);
-                    FAIL_PUTS_ERROR(mesg);
-                }
-
-                for (k = 0; k < CHUNK_DIM; k++) {
-                    for (l = 0; l < CHUNK_DIM; l++) {
-                        if ((unsigned)data_chunk[k][l]
-                            !=
-                            ((DSET_DIM * DSET_DIM * m) +
-                             (DSET_DIM * (i + k)) + j + l))
-                        {
-                            HDsnprintf(mesg, MIRR_MESG_SIZE,
-                                    "      MISMATCH [%d][%d][%d][%d][%d]\n",
-                                    i, j, m, k, l);
-                            FAIL_PUTS_ERROR(mesg);
-                        }
-                    }
-                }
-
-            }
+        /* select on disk hyperslab */
+        offset[0] = (hsize_t)i;
+        offset[1] = (hsize_t)j;
+        if (H5Sselect_hyperslab(filespace_ids[m], H5S_SELECT_SET, offset, NULL,
+                                a_size, NULL) < 0) {
+          TEST_ERROR;
         }
-    }
 
-    return SUCCEED;
+        if (H5Dread(dataset_ids[m], H5T_NATIVE_INT, memspace_id,
+                    filespace_ids[m], H5P_DEFAULT, data_chunk) < 0) {
+          HDsnprintf(mesg, MIRR_MESG_SIZE, "      H5Dread() [%d][%d][%d]\n", i,
+                     j, m);
+          FAIL_PUTS_ERROR(mesg);
+        }
+
+        for (k = 0; k < CHUNK_DIM; k++) {
+          for (l = 0; l < CHUNK_DIM; l++) {
+            if ((unsigned)data_chunk[k][l] !=
+                ((DSET_DIM * DSET_DIM * m) + (DSET_DIM * (i + k)) + j + l)) {
+              HDsnprintf(mesg, MIRR_MESG_SIZE,
+                         "      MISMATCH [%d][%d][%d][%d][%d]\n", i, j, m, k,
+                         l);
+              FAIL_PUTS_ERROR(mesg);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return SUCCEED;
 
 error:
-    LOGPRINT(1, "_verify_datasets() FAILED\n");
-    return FAIL;
+  LOGPRINT(1, "_verify_datasets() FAILED\n");
+  return FAIL;
 } /* end _verify_datasets() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    verify_datasets
  *
@@ -1898,77 +1798,67 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static herr_t
-verify_datasets(hid_t    file_id,
-                unsigned min_dset,
-                unsigned max_dset)
-{
-    hid_t    dataset_ids[MAX_DSET_COUNT + 1];
-    hid_t    filespace_ids[MAX_DSET_COUNT + 1];
-    unsigned i;
-    hid_t    memspace_id   = H5I_INVALID_HID;
-    hsize_t  chunk_dims[2] = {CHUNK_DIM, CHUNK_DIM};
+static herr_t verify_datasets(hid_t file_id, unsigned min_dset,
+                              unsigned max_dset) {
+  hid_t dataset_ids[MAX_DSET_COUNT + 1];
+  hid_t filespace_ids[MAX_DSET_COUNT + 1];
+  unsigned i;
+  hid_t memspace_id = H5I_INVALID_HID;
+  hsize_t chunk_dims[2] = {CHUNK_DIM, CHUNK_DIM};
 
-    HDassert(file_id >= 0);
-    HDassert(min_dset <= max_dset);
-    HDassert(max_dset <= MAX_DSET_COUNT);
+  HDassert(file_id >= 0);
+  HDassert(min_dset <= max_dset);
+  HDassert(max_dset <= MAX_DSET_COUNT);
 
-    LOGPRINT(2, "verify_datasets()\n");
+  LOGPRINT(2, "verify_datasets()\n");
 
-    /* ---------------------------------
-     * "Clear" ID arrays
-     */
+  /* ---------------------------------
+   * "Clear" ID arrays
+   */
 
-    for (i = 0; i < MAX_DSET_COUNT; i++) {
-        LOGPRINT(3, "clearing IDs [%d]\n", i);
-        dataset_ids[i] = H5I_INVALID_HID;
-        filespace_ids[i] = H5I_INVALID_HID;
-    }
+  for (i = 0; i < MAX_DSET_COUNT; i++) {
+    LOGPRINT(3, "clearing IDs [%d]\n", i);
+    dataset_ids[i] = H5I_INVALID_HID;
+    filespace_ids[i] = H5I_INVALID_HID;
+  }
 
-    /* ---------------------------------
-     * Generate dataspace, dataset, and 'filespace' IDs
-     */
+  /* ---------------------------------
+   * Generate dataspace, dataset, and 'filespace' IDs
+   */
 
-    if (_open_chunking_ids(file_id, min_dset, max_dset, chunk_dims,
-            filespace_ids, dataset_ids, &memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_open_chunking_ids(file_id, min_dset, max_dset, chunk_dims, filespace_ids,
+                         dataset_ids, &memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    /* ---------------------------------
-     * Read and verify data from datasets
-     */
+  /* ---------------------------------
+   * Read and verify data from datasets
+   */
 
-    if (_verify_datasets(min_dset, max_dset, filespace_ids, dataset_ids,
-            memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_verify_datasets(min_dset, max_dset, filespace_ids, dataset_ids,
+                       memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    /* ---------------------------------
-     * Cleanup
-     */
+  /* ---------------------------------
+   * Cleanup
+   */
 
-    if (_close_chunking_ids(min_dset, max_dset, NULL, filespace_ids,
-                dataset_ids, &memspace_id)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (_close_chunking_ids(min_dset, max_dset, NULL, filespace_ids, dataset_ids,
+                          &memspace_id) == FAIL) {
+    TEST_ERROR;
+  }
 
-    return SUCCEED;
+  return SUCCEED;
 
 error:
-    LOGPRINT(1, "verify_datasets() FAILED\n");
-    (void)_close_chunking_ids(min_dset, max_dset, NULL, filespace_ids,
-            dataset_ids, &memspace_id);
-    return FAIL;
+  LOGPRINT(1, "verify_datasets() FAILED\n");
+  (void)_close_chunking_ids(min_dset, max_dset, NULL, filespace_ids,
+                            dataset_ids, &memspace_id);
+  return FAIL;
 
 } /* end verify_datasets() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_basic_dataset_write
  *
@@ -1984,137 +1874,136 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static int
-test_basic_dataset_write(void)
-{
-    struct subfilingtest_filenames names;
-    off_t       f1size  = 0; /* size of the files */
-    int         f1_fid  = -1;
-    int         f1int   = 0;
-    hid_t       file_id = H5I_INVALID_HID;
-    hid_t       fapl_id = H5P_DEFAULT;
-    hid_t       dset_id = H5I_INVALID_HID;
-    hid_t       dspace_id = H5I_INVALID_HID;
-    hid_t       dtype_id = H5T_NATIVE_INT;
-    hsize_t     dims[2] = { BIG_DATABUFFER_SIZE, BIG_DATABUFFER_SIZE };
-    int        *check = NULL;
-    int        *buf = NULL;
+static int test_basic_dataset_write(void) {
+  struct subfilingtest_filenames names;
+  off_t f1size = 0; /* size of the files */
+  int f1_fid = -1;
+  int f1int = 0;
+  hid_t file_id = H5I_INVALID_HID;
+  hid_t fapl_id = H5P_DEFAULT;
+  hid_t dset_id = H5I_INVALID_HID;
+  hid_t dspace_id = H5I_INVALID_HID;
+  hid_t dtype_id = H5T_NATIVE_INT;
+  hsize_t dims[2] = {BIG_DATABUFFER_SIZE, BIG_DATABUFFER_SIZE};
+  int *check = NULL;
+  int *buf = NULL;
 
-    int         buf_size  = BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE;
-    int         i = 0;
-    int         j = 0;
-    int         k = 0;
-    int         ret_value = 0; /* for error handling */
+  int buf_size = BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE;
+  int i = 0;
+  int j = 0;
+  int k = 0;
+  int ret_value = 0; /* for error handling */
 
-    TESTING("Subfiling open and dataset writing");
+  TESTING("Subfiling open and dataset writing");
 
-    /* Create FAPL for Ioc[sec2|subfiling]
-     */
-    fapl_id = create_subfiling_ioc_fapl("basic_write", &names);
-    if (H5I_INVALID_HID == fapl_id) {
-        TEST_ERROR;
+  /* Create FAPL for Ioc[sec2|subfiling]
+   */
+  fapl_id = create_subfiling_ioc_fapl("basic_write", &names);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
+
+  /* Prepare data to be written
+   */
+  check =
+      (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
+  if (NULL == check) {
+    TEST_ERROR;
+  }
+
+  buf =
+      (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
+  if (NULL == buf) {
+    TEST_ERROR;
+  }
+  for (i = 0; i < BIG_DATABUFFER_SIZE; i++) {
+    for (j = 0; j < BIG_DATABUFFER_SIZE; j++) {
+      int k = i * BIG_DATABUFFER_SIZE + j;
+      buf[k] = k;
     }
+  }
 
-    /* Prepare data to be written
-     */
-    check = (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
-    if (NULL == check) {
-        TEST_ERROR;
-    }
+  /* -------------------- */
+  /* TEST: Create and Close */
 
-    buf = (int *)HDmalloc(BIG_DATABUFFER_SIZE * BIG_DATABUFFER_SIZE * sizeof(int));
-    if (NULL == buf) {
-        TEST_ERROR;
-    }
-    for (i = 0; i < BIG_DATABUFFER_SIZE; i++) {
-        for (j = 0; j < BIG_DATABUFFER_SIZE; j++) {
-            int k = i * BIG_DATABUFFER_SIZE + j;
-            buf[k] = k;
-        }
-    }
+  file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
 
-    /* -------------------- */
-    /* TEST: Create and Close */
+  /* -------------------- */
+  /* TEST: Repoen and Write */
 
-    file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
+  file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
 
-    /* -------------------- */
-    /* TEST: Repoen and Write */
+  dspace_id = H5Screate_simple(2, dims, NULL);
+  if (H5I_INVALID_HID == dspace_id) {
+    TEST_ERROR;
+  }
 
-    file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
+  dset_id = H5Dcreate2(file_id, "dataset", dtype_id, dspace_id, H5P_DEFAULT,
+                       H5P_DEFAULT, H5P_DEFAULT);
+  if (H5I_INVALID_HID == dset_id) {
+    TEST_ERROR;
+  }
 
-    dspace_id = H5Screate_simple(2, dims, NULL);
-    if (H5I_INVALID_HID == dspace_id) {
-        TEST_ERROR;
-    }
+  if (H5Dwrite(dset_id, dtype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf) == FAIL) {
+    TEST_ERROR;
+  }
 
-    dset_id = H5Dcreate2(file_id, "dataset", dtype_id, dspace_id, H5P_DEFAULT,
-            H5P_DEFAULT, H5P_DEFAULT);
-    if (H5I_INVALID_HID == dset_id) {
-        TEST_ERROR;
-    }
+  if (H5Dread(dset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, check) <
+      0)
+    TEST_ERROR
 
-    if (H5Dwrite(dset_id, dtype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf)
-        == FAIL)
-    {
-        TEST_ERROR;
-    }
+  if (H5Dclose(dset_id) == FAIL) {
+    TEST_ERROR;
+  }
+  if (H5Sclose(dspace_id) == FAIL) {
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  for (i = 0; i < buf_size; i++) {
+    if (buf[i] != check[i])
+      TEST_ERROR;
+  }
 
-    if (H5Dread(dset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, check) < 0)
-        TEST_ERROR
+  /* -------------------- */
+  /* Standard cleanup     */
+  /* -------------------- */
 
-    if (H5Dclose(dset_id) == FAIL) {
-        TEST_ERROR;
-    }
-    if (H5Sclose(dspace_id) == FAIL) {
-        TEST_ERROR;
-    }
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-	for(i=0; i < buf_size; i++) {
-		if (buf[i] != check[i])
-           TEST_ERROR;
-	}
+  HDfree(buf);
+  buf = NULL;
+  HDfree(check);
+  check = NULL;
 
-    /* -------------------- */
-    /* Standard cleanup     */
-    /* -------------------- */
-
-    HDfree(buf);
-    buf = NULL;
-	HDfree(check);
-	check = NULL;
-
-    PASSED();
-    return 0;
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY{
-        (void)H5Fclose(file_id);
-        if (buf) {
-            HDfree(buf);
-        }
-        (void)H5Dclose(dset_id);
-        (void)H5Sclose(dspace_id);
-        if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
-            (void)H5Pclose(fapl_id);
-        }
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    (void)H5Fclose(file_id);
+    if (buf) {
+      HDfree(buf);
+    }
+    (void)H5Dclose(dset_id);
+    (void)H5Sclose(dspace_id);
+    if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
+      (void)H5Pclose(fapl_id);
+    }
+  }
+  H5E_END_TRY;
+  return -1;
 } /* end test_basic_dataset_write() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_chunked_dataset_write
  *
@@ -2130,103 +2019,101 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static int
-test_chunked_dataset_write(void)
-{
-    struct subfilingtest_filenames names;
-    hid_t       file_id = H5I_INVALID_HID;
-    hid_t       fapl_id = H5P_DEFAULT;
+static int test_chunked_dataset_write(void) {
+  struct subfilingtest_filenames names;
+  hid_t file_id = H5I_INVALID_HID;
+  hid_t fapl_id = H5P_DEFAULT;
 
-    TESTING("Subfiling open and dataset writing (chunked)");
+  TESTING("Subfiling open and dataset writing (chunked)");
 
-    /* Create FAPL for Ioc[sec2|subfiling]
-     */
-    fapl_id = create_subfiling_ioc_fapl("chunked_write", &names);
-    if (H5I_INVALID_HID == fapl_id) {
-        TEST_ERROR;
+  /* Create FAPL for Ioc[sec2|subfiling]
+   */
+  fapl_id = create_subfiling_ioc_fapl("chunked_write", &names);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* TEST: Create and Close */
+
+  file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
+
+  /* -------------------- */
+  /* TEST: Reopen and Write */
+
+  file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+
+  /* Write datasets to file
+   */
+  if (create_datasets(file_id, 0, MAX_DSET_COUNT) == FAIL) {
+    TEST_ERROR;
+  }
+
+  /* Close to 'flush to disk', and reopen file
+   */
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
+
+  /* Reopen file
+   */
+  file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+
+  /* Verify written data integrity
+   */
+  if (verify_datasets(file_id, 0, MAX_DSET_COUNT) == FAIL) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* Standard cleanup */
+
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
+  if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
+    if (H5Pclose(fapl_id) == FAIL) {
+      TEST_ERROR;
     }
+    fapl_id = H5I_INVALID_HID;
+  }
 
-    /* -------------------- */
-    /* TEST: Create and Close */
+  /* -------------------- */
+  /* TEST: Verify that the R/W and W/O files are identical */
 
-    file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
+  if (h5_compare_file_bytes(names.rw, names.wo) < 0) {
+    TEST_ERROR;
+  }
 
-    /* -------------------- */
-    /* TEST: Reopen and Write */
-
-    file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
-
-    /* Write datasets to file
-     */
-    if (create_datasets(file_id, 0, MAX_DSET_COUNT) == FAIL) {
-        TEST_ERROR;
-    }
-
-    /* Close to 'flush to disk', and reopen file
-     */
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
-
-    /* Reopen file
-     */
-    file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
-
-    /* Verify written data integrity
-     */
-    if (verify_datasets(file_id, 0, MAX_DSET_COUNT) == FAIL) {
-        TEST_ERROR;
-    }
-
-    /* -------------------- */
-    /* Standard cleanup */
-
-    if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
-    if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
-        if (H5Pclose(fapl_id) == FAIL) {
-            TEST_ERROR;
-        }
-        fapl_id = H5I_INVALID_HID;
-    }
-
-    /* -------------------- */
-    /* TEST: Verify that the R/W and W/O files are identical */
-
-    if (h5_compare_file_bytes(names.rw, names.wo) < 0) {
-        TEST_ERROR;
-    }
-
-    PASSED();
-    return 0;
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY {
-        (void)H5Fclose(file_id);
-        if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
-            (void)H5Pclose(fapl_id);
-        }
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    (void)H5Fclose(file_id);
+    if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
+      (void)H5Pclose(fapl_id);
+    }
+  }
+  H5E_END_TRY;
+  return -1;
 } /* end test_chunked_dataset_write() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_on_disk_zoo
  *
@@ -2243,99 +2130,96 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static int
-test_on_disk_zoo(void)
-{
-    const char  grp_name[] = "/only";
-    struct subfilingtest_filenames names;
-    hid_t       file_id = H5I_INVALID_HID;
-    hid_t       grp_id  = H5I_INVALID_HID;
-    hid_t       fapl_id = H5P_DEFAULT;
+static int test_on_disk_zoo(void) {
+  const char grp_name[] = "/only";
+  struct subfilingtest_filenames names;
+  hid_t file_id = H5I_INVALID_HID;
+  hid_t grp_id = H5I_INVALID_HID;
+  hid_t fapl_id = H5P_DEFAULT;
 
-    TESTING("'Zoo' of on-disk structures");
+  TESTING("'Zoo' of on-disk structures");
 
-    /* Create FAPL for Ioc[sec2|subfiling]
-     */
-    fapl_id = create_subfiling_ioc_fapl("zoo", &names);
-    if (H5I_INVALID_HID == fapl_id) {
-        TEST_ERROR;
-    }
+  /* Create FAPL for Ioc[sec2|subfiling]
+   */
+  fapl_id = create_subfiling_ioc_fapl("zoo", &names);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
 
-    /* -------------------- */
-    /* TEST: Create file    */
-    file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
-        TEST_ERROR;
-    }
+  /* -------------------- */
+  /* TEST: Create file    */
+  file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
 
-    grp_id = H5Gcreate2(file_id, grp_name, H5P_DEFAULT, H5P_DEFAULT,
-            H5P_DEFAULT);
-    if (grp_id == H5I_INVALID_HID) {
-        TEST_ERROR;
-    }
+  grp_id = H5Gcreate2(file_id, grp_name, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  if (grp_id == H5I_INVALID_HID) {
+    TEST_ERROR;
+  }
 
-    /* Create datasets in file, close (flush) and reopen, validate.
-     * Use of ( pass ) a conceit required for using create_ and validate_zoo()
-     * from cache_common and/or genall5.
-     */
+  /* Create datasets in file, close (flush) and reopen, validate.
+   * Use of ( pass ) a conceit required for using create_ and validate_zoo()
+   * from cache_common and/or genall5.
+   */
 
-    if ( pass ) {
-        create_zoo(file_id, grp_name, 0);
-    }
-    if ( pass ) {
-        if (H5Fclose(file_id) == FAIL) {
-            TEST_ERROR;
-        }
-        file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
-        if (H5I_INVALID_HID == file_id) {
-            TEST_ERROR;
-        }
-    }
-    if ( pass ) {
-        validate_zoo(file_id, grp_name, 0); /* sanity-check */
-    }
-    if ( !pass ) {
-        HDprintf(failure_mssg);
-        TEST_ERROR;
-    }
-
-    /* -------------------- */
-    /* Standard cleanup */
-
-    if (fapl_id != H5P_DEFAULT && fapl_id >= 0) {
-        if (H5Pclose(fapl_id) == FAIL) {
-            TEST_ERROR;
-        }
-    }
-    if (H5Gclose(grp_id) == FAIL) {
-        TEST_ERROR;
-    }
+  if (pass) {
+    create_zoo(file_id, grp_name, 0);
+  }
+  if (pass) {
     if (H5Fclose(file_id) == FAIL) {
-        TEST_ERROR;
+      TEST_ERROR;
     }
-
-    /* -------------------- */
-    /* TEST: Verify that the R/W and W/O files are identical */
-
-    if (h5_compare_file_bytes(names.rw, names.wo) < 0) {
-        TEST_ERROR;
+    file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
+    if (H5I_INVALID_HID == file_id) {
+      TEST_ERROR;
     }
+  }
+  if (pass) {
+    validate_zoo(file_id, grp_name, 0); /* sanity-check */
+  }
+  if (!pass) {
+    HDprintf(failure_mssg);
+    TEST_ERROR;
+  }
 
-    PASSED();
-    return 0;
+  /* -------------------- */
+  /* Standard cleanup */
+
+  if (fapl_id != H5P_DEFAULT && fapl_id >= 0) {
+    if (H5Pclose(fapl_id) == FAIL) {
+      TEST_ERROR;
+    }
+  }
+  if (H5Gclose(grp_id) == FAIL) {
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) == FAIL) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* TEST: Verify that the R/W and W/O files are identical */
+
+  if (h5_compare_file_bytes(names.rw, names.wo) < 0) {
+    TEST_ERROR;
+  }
+
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY {
-        (void)H5Fclose(file_id);
-        (void)H5Gclose(grp_id);
-        if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
-            (void)H5Pclose(fapl_id);
-        }
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    (void)H5Fclose(file_id);
+    (void)H5Gclose(grp_id);
+    if (fapl_id != H5P_DEFAULT && fapl_id > 0) {
+      (void)H5Pclose(fapl_id);
+    }
+  }
+  H5E_END_TRY;
+  return -1;
 } /* end test_on_disk_zoo() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_vanishing_datasets
  *
@@ -2356,171 +2240,163 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-static int
-test_vanishing_datasets(void)
-{
-    struct subfilingtest_filenames names;
-    hid_t       file_id = H5I_INVALID_HID;
-    hid_t       fapl_id = H5I_INVALID_HID;
-    hid_t       dset_id = H5I_INVALID_HID;
-    hid_t       dspace_id = H5I_INVALID_HID;
-    hid_t       subfiling_fapl_id = H5I_INVALID_HID;
-    hsize_t     dims[2] = {DATABUFFER_SIZE, DATABUFFER_SIZE};
-    uint32_t    buf[DATABUFFER_SIZE][DATABUFFER_SIZE]; /* consider malloc? */
-    H5G_info_t  group_info;
-    unsigned int        i, j, k;
-    const unsigned int  max_loops = 20;
-    const unsigned int  max_at_one_time = 3;
+static int test_vanishing_datasets(void) {
+  struct subfilingtest_filenames names;
+  hid_t file_id = H5I_INVALID_HID;
+  hid_t fapl_id = H5I_INVALID_HID;
+  hid_t dset_id = H5I_INVALID_HID;
+  hid_t dspace_id = H5I_INVALID_HID;
+  hid_t subfiling_fapl_id = H5I_INVALID_HID;
+  hsize_t dims[2] = {DATABUFFER_SIZE, DATABUFFER_SIZE};
+  uint32_t buf[DATABUFFER_SIZE][DATABUFFER_SIZE]; /* consider malloc? */
+  H5G_info_t group_info;
+  unsigned int i, j, k;
+  const unsigned int max_loops = 20;
+  const unsigned int max_at_one_time = 3;
 
-    TESTING("Vanishing Datasets");
+  TESTING("Vanishing Datasets");
 
-    /* -------------------- */
-    /* Set up recurrent data (FAPL, dataspace) */
+  /* -------------------- */
+  /* Set up recurrent data (FAPL, dataspace) */
 
-    /* Create FAPL for Ioc[sec2|subfiling]
-     */
-    fapl_id = create_subfiling_ioc_fapl("vanishing", &names);
-    if (H5I_INVALID_HID == fapl_id) {
+  /* Create FAPL for Ioc[sec2|subfiling]
+   */
+  fapl_id = create_subfiling_ioc_fapl("vanishing", &names);
+  if (H5I_INVALID_HID == fapl_id) {
+    TEST_ERROR;
+  }
+
+  dspace_id = H5Screate_simple(2, dims, NULL);
+  if (dspace_id < 0) {
+    TEST_ERROR;
+  }
+
+  /* create file */
+  file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
+  if (H5I_INVALID_HID == file_id) {
+    TEST_ERROR;
+  }
+
+  for (i = 0; i < max_loops; i++) {
+    char namebuf[DSET_NAME_LEN + 1];
+
+    /* deleting datasets */
+    if (i >= max_at_one_time) {
+      if (HDsnprintf(namebuf, DSET_NAME_LEN, "/dset%02d",
+                     (i - max_at_one_time)) > DSET_NAME_LEN) {
         TEST_ERROR;
-    }
-
-    dspace_id = H5Screate_simple(2, dims, NULL);
-    if (dspace_id < 0) {
+      }
+      if (H5Ldelete(file_id, namebuf, H5P_DEFAULT) < 0) {
         TEST_ERROR;
-    }
+      }
+    } /* end if deleting a dataset */
 
-    /* create file */
-    file_id = H5Fcreate(names.rw, H5F_ACC_TRUNC, H5P_DEFAULT, fapl_id);
-    if (H5I_INVALID_HID == file_id) {
+    /* writing datasets */
+    if (i < (max_loops - max_at_one_time)) {
+      if (HDsnprintf(namebuf, DSET_NAME_LEN, "/dset%02d", i) > DSET_NAME_LEN) {
         TEST_ERROR;
-    }
-
-    for (i=0; i < max_loops; i++) {
-        char namebuf[DSET_NAME_LEN + 1];
-
-        /* deleting datasets */
-        if (i >= max_at_one_time) {
-            if (HDsnprintf(namebuf, DSET_NAME_LEN, "/dset%02d",
-                    (i - max_at_one_time) )
-                > DSET_NAME_LEN)
-            {
-                TEST_ERROR;
-            }
-            if (H5Ldelete(file_id, namebuf, H5P_DEFAULT) < 0) {
-                TEST_ERROR;
-            }
-        } /* end if deleting a dataset */
-
-        /* writing datasets */
-        if (i < (max_loops - max_at_one_time)) {
-            if (HDsnprintf(namebuf, DSET_NAME_LEN, "/dset%02d", i)
-                > DSET_NAME_LEN)
-            {
-                TEST_ERROR;
-            }
-            dset_id = H5Dcreate2(file_id, namebuf, H5T_STD_U32LE, dspace_id,
-                    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-            if (H5I_INVALID_HID == dset_id) {
-                TEST_ERROR;
-            }
-
-            for (j=0; j < DATABUFFER_SIZE; j++) {
-                for (k=0; k < DATABUFFER_SIZE; k++) {
-                    buf[j][k] = (uint32_t)i;
-                }
-            }
-
-            if (H5Dwrite(dset_id, H5T_STD_U32LE, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                    buf)
-                < 0)
-            {
-                TEST_ERROR;
-            }
-
-            if (H5Dclose(dset_id) < 0) {
-                TEST_ERROR;
-            }
-            dset_id = H5I_INVALID_HID;
-        } /* end if writing a dataset */
-
-    } /* end for dataset create-destroy cycles */
-
-    if (H5Fclose(file_id) < 0) {
+      }
+      dset_id = H5Dcreate2(file_id, namebuf, H5T_STD_U32LE, dspace_id,
+                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+      if (H5I_INVALID_HID == dset_id) {
         TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
+      }
 
-    /* verify there are no datasets in file */
-    file_id = H5Fopen(names.rw, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (file_id < 0) {
-        TEST_ERROR;
-    }
-    if (H5Gget_info(file_id, &group_info) < 0) {
-        TEST_ERROR;
-    }
-    if (group_info.nlinks > 0) {
-        HDfprintf(stderr, "links in rw file: %d\n", group_info.nlinks);
-        HDfflush(stderr);
-        TEST_ERROR;
-    }
-    if (H5Fclose(file_id) < 0) {
-        TEST_ERROR;
-    }
-    file_id = H5Fopen(names.wo, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (file_id < 0) {
-        TEST_ERROR;
-    }
-    if (H5Gget_info(file_id, &group_info) < 0) {
-        TEST_ERROR;
-    }
-    if (group_info.nlinks > 0) {
-        HDfprintf(stderr, "links in wo file: %d\n", group_info.nlinks);
-        HDfflush(stderr);
-        TEST_ERROR;
-    }
-    if (H5Fclose(file_id) < 0) {
-        TEST_ERROR;
-    }
-    file_id = H5I_INVALID_HID;
+      for (j = 0; j < DATABUFFER_SIZE; j++) {
+        for (k = 0; k < DATABUFFER_SIZE; k++) {
+          buf[j][k] = (uint32_t)i;
+        }
+      }
 
-    if (h5_compare_file_bytes(names.rw, names.wo) < 0)
+      if (H5Dwrite(dset_id, H5T_STD_U32LE, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf) <
+          0) {
         TEST_ERROR;
+      }
 
-    /* -------------------- */
-    /* Teardown */
-
-    if (H5Sclose(dspace_id) < 0) {
+      if (H5Dclose(dset_id) < 0) {
         TEST_ERROR;
-    }
-    if (H5Pclose(fapl_id) < 0) {
-        TEST_ERROR;
-    }
+      }
+      dset_id = H5I_INVALID_HID;
+    } /* end if writing a dataset */
 
-    PASSED();
-    return 0;
+  } /* end for dataset create-destroy cycles */
+
+  if (H5Fclose(file_id) < 0) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
+
+  /* verify there are no datasets in file */
+  file_id = H5Fopen(names.rw, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file_id < 0) {
+    TEST_ERROR;
+  }
+  if (H5Gget_info(file_id, &group_info) < 0) {
+    TEST_ERROR;
+  }
+  if (group_info.nlinks > 0) {
+    HDfprintf(stderr, "links in rw file: %d\n", group_info.nlinks);
+    HDfflush(stderr);
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) < 0) {
+    TEST_ERROR;
+  }
+  file_id = H5Fopen(names.wo, H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file_id < 0) {
+    TEST_ERROR;
+  }
+  if (H5Gget_info(file_id, &group_info) < 0) {
+    TEST_ERROR;
+  }
+  if (group_info.nlinks > 0) {
+    HDfprintf(stderr, "links in wo file: %d\n", group_info.nlinks);
+    HDfflush(stderr);
+    TEST_ERROR;
+  }
+  if (H5Fclose(file_id) < 0) {
+    TEST_ERROR;
+  }
+  file_id = H5I_INVALID_HID;
+
+  if (h5_compare_file_bytes(names.rw, names.wo) < 0)
+    TEST_ERROR;
+
+  /* -------------------- */
+  /* Teardown */
+
+  if (H5Sclose(dspace_id) < 0) {
+    TEST_ERROR;
+  }
+  if (H5Pclose(fapl_id) < 0) {
+    TEST_ERROR;
+  }
+
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY {
-        if (subfiling_fapl_id != H5I_INVALID_HID) {
-            H5Pclose(subfiling_fapl_id);
-        }
-        if (fapl_id != H5I_INVALID_HID) {
-            H5Pclose(fapl_id);
-        }
-        if (file_id != H5I_INVALID_HID) {
-            H5Fclose(file_id);
-        }
-        if (dset_id != H5I_INVALID_HID) {
-            H5Dclose(dset_id);
-        }
-        if (dspace_id != H5I_INVALID_HID) {
-            H5Sclose(dspace_id);
-        }
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    if (subfiling_fapl_id != H5I_INVALID_HID) {
+      H5Pclose(subfiling_fapl_id);
+    }
+    if (fapl_id != H5I_INVALID_HID) {
+      H5Pclose(fapl_id);
+    }
+    if (file_id != H5I_INVALID_HID) {
+      H5Fclose(file_id);
+    }
+    if (dset_id != H5I_INVALID_HID) {
+      H5Dclose(dset_id);
+    }
+    if (dspace_id != H5I_INVALID_HID) {
+      H5Sclose(dspace_id);
+    }
+  }
+  H5E_END_TRY;
+  return -1;
 } /* test_vanishing_datasets() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    test_concurrent_access
  *
@@ -2535,154 +2411,150 @@ error:
  *              2020-03-09
  * ---------------------------------------------------------------------------
  */
-static int
-test_concurrent_access(void)
-{
-    struct file_bundle {
-        struct subfilingtest_filenames names;
-        hid_t dset_id;
-        hid_t fapl_id;
-        hid_t file_id;
-    } bundle[CONCURRENT_COUNT];
-    hid_t       dspace_id = H5I_INVALID_HID;
-    hid_t       dtype_id = H5T_NATIVE_INT;
-    hsize_t     dims[2] = { DATABUFFER_SIZE, DATABUFFER_SIZE };
-    int        *buf = NULL;
-    int         i = 0;
-    int         j = 0;
+static int test_concurrent_access(void) {
+  struct file_bundle {
+    struct subfilingtest_filenames names;
+    hid_t dset_id;
+    hid_t fapl_id;
+    hid_t file_id;
+  } bundle[CONCURRENT_COUNT];
+  hid_t dspace_id = H5I_INVALID_HID;
+  hid_t dtype_id = H5T_NATIVE_INT;
+  hsize_t dims[2] = {DATABUFFER_SIZE, DATABUFFER_SIZE};
+  int *buf = NULL;
+  int i = 0;
+  int j = 0;
 
-    TESTING("Concurrent opened subfilinged files");
+  TESTING("Concurrent opened subfilinged files");
 
-    /* blank bundle */
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        bundle[i].dset_id = H5I_INVALID_HID;
-        bundle[i].fapl_id = H5I_INVALID_HID;
-        bundle[i].file_id = H5I_INVALID_HID;
-        *bundle[i].names.rw = '\0';
-        *bundle[i].names.wo = '\0';
-        *bundle[i].names.log = '\0';
+  /* blank bundle */
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    bundle[i].dset_id = H5I_INVALID_HID;
+    bundle[i].fapl_id = H5I_INVALID_HID;
+    bundle[i].file_id = H5I_INVALID_HID;
+    *bundle[i].names.rw = '\0';
+    *bundle[i].names.wo = '\0';
+    *bundle[i].names.log = '\0';
+  }
+
+  /* Create FAPL for Ioc[sec2|subfiling]
+   */
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    char _name[16] = "";
+    hid_t _fapl_id = H5I_INVALID_HID;
+    HDsnprintf(_name, 15, "concurrent%d", i);
+    _fapl_id = create_subfiling_ioc_fapl(_name, &bundle[i].names);
+    if (H5I_INVALID_HID == _fapl_id) {
+      TEST_ERROR;
+    }
+    bundle[i].fapl_id = _fapl_id;
+  }
+
+  /* Prepare data to be written
+   */
+  buf = (int *)HDmalloc(DATABUFFER_SIZE * DATABUFFER_SIZE * sizeof(int));
+  if (NULL == buf) {
+    TEST_ERROR;
+  }
+  for (i = 0; i < DATABUFFER_SIZE; i++) {
+    for (j = 0; j < DATABUFFER_SIZE; j++) {
+      int k = i * DATABUFFER_SIZE + j;
+      buf[k] = k;
+    }
+  }
+
+  /* Prepare generic dataspace
+   */
+  dspace_id = H5Screate_simple(2, dims, NULL);
+  if (H5I_INVALID_HID == dspace_id) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* TEST: Create file and open elements */
+
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    hid_t _file_id = H5I_INVALID_HID;
+    hid_t _dset_id = H5I_INVALID_HID;
+
+    _file_id = H5Fcreate(bundle[i].names.rw, H5F_ACC_TRUNC, H5P_DEFAULT,
+                         bundle[i].fapl_id);
+    if (H5I_INVALID_HID == _file_id) {
+      TEST_ERROR;
     }
 
-    /* Create FAPL for Ioc[sec2|subfiling]
-     */
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        char _name[16] = "";
-        hid_t _fapl_id = H5I_INVALID_HID;
-        HDsnprintf(_name, 15, "concurrent%d", i);
-        _fapl_id = create_subfiling_ioc_fapl(_name, &bundle[i].names);
-        if (H5I_INVALID_HID == _fapl_id) {
-            TEST_ERROR;
-        }
-        bundle[i].fapl_id = _fapl_id;
+    bundle[i].file_id = _file_id;
+
+    _dset_id = H5Dcreate2(_file_id, "dataset", dtype_id, dspace_id, H5P_DEFAULT,
+                          H5P_DEFAULT, H5P_DEFAULT);
+    if (H5I_INVALID_HID == _dset_id) {
+      TEST_ERROR;
     }
+    bundle[i].dset_id = _dset_id;
+  }
 
-    /* Prepare data to be written
-     */
-    buf = (int *)HDmalloc(DATABUFFER_SIZE * DATABUFFER_SIZE * sizeof(int));
-    if (NULL == buf) {
-        TEST_ERROR;
+  /* -------------------- */
+  /* TEST: Write to files */
+
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    if (H5Dwrite(bundle[i].dset_id, dtype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                 buf) == FAIL) {
+      TEST_ERROR;
     }
-    for (i = 0; i < DATABUFFER_SIZE; i++) {
-        for (j = 0; j < DATABUFFER_SIZE; j++) {
-            int k = i * DATABUFFER_SIZE + j;
-            buf[k] = k;
-        }
+  }
+
+  /* -------------------- */
+  /* TEST: Close elements  */
+
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    if (H5Dclose(bundle[i].dset_id) == FAIL) {
+      TEST_ERROR;
     }
-
-    /* Prepare generic dataspace
-     */
-    dspace_id = H5Screate_simple(2, dims, NULL);
-    if (H5I_INVALID_HID == dspace_id) {
-        TEST_ERROR;
+    if (H5Fclose(bundle[i].file_id) == FAIL) {
+      TEST_ERROR;
     }
-
-    /* -------------------- */
-    /* TEST: Create file and open elements */
-
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        hid_t _file_id = H5I_INVALID_HID;
-        hid_t _dset_id = H5I_INVALID_HID;
-
-        _file_id = H5Fcreate(bundle[i].names.rw, H5F_ACC_TRUNC, H5P_DEFAULT,
-                bundle[i].fapl_id);
-        if (H5I_INVALID_HID == _file_id) {
-            TEST_ERROR;
-        }
-
-        bundle[i].file_id  = _file_id;
-
-        _dset_id = H5Dcreate2(_file_id, "dataset", dtype_id, dspace_id,
-                H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (H5I_INVALID_HID == _dset_id) {
-            TEST_ERROR;
-        }
-        bundle[i].dset_id = _dset_id;
+    if (H5Pclose(bundle[i].fapl_id) == FAIL) {
+      TEST_ERROR;
     }
+  }
 
-    /* -------------------- */
-    /* TEST: Write to files */
+  /* -------------------- */
+  /* Standard cleanup */
 
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        if (H5Dwrite(bundle[i].dset_id, dtype_id, H5S_ALL, H5S_ALL,
-                H5P_DEFAULT, buf)
-            == FAIL)
-        {
-            TEST_ERROR;
-        }
+  HDfree(buf);
+  buf = NULL;
+  if (H5Sclose(dspace_id) == FAIL) {
+    TEST_ERROR;
+  }
+
+  /* -------------------- */
+  /* TEST: Verify that the R/W and W/O files are identical */
+
+  for (i = 0; i < CONCURRENT_COUNT; i++) {
+    if (h5_compare_file_bytes(bundle[i].names.rw, bundle[i].names.wo) < 0) {
+      TEST_ERROR;
     }
+  }
 
-    /* -------------------- */
-    /* TEST: Close elements  */
-
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        if (H5Dclose(bundle[i].dset_id) == FAIL) {
-            TEST_ERROR;
-        }
-        if (H5Fclose(bundle[i].file_id) == FAIL) {
-            TEST_ERROR;
-        }
-        if (H5Pclose(bundle[i].fapl_id) == FAIL) {
-            TEST_ERROR;
-        }
-    }
-
-    /* -------------------- */
-    /* Standard cleanup */
-
-    HDfree(buf);
-    buf = NULL;
-    if (H5Sclose(dspace_id) == FAIL) {
-        TEST_ERROR;
-    }
-
-    /* -------------------- */
-    /* TEST: Verify that the R/W and W/O files are identical */
-
-    for (i = 0; i < CONCURRENT_COUNT; i++) {
-        if (h5_compare_file_bytes(bundle[i].names.rw, bundle[i].names.wo) < 0) {
-            TEST_ERROR;
-        }
-    }
-
-    PASSED();
-    return 0;
+  PASSED();
+  return 0;
 
 error:
-    H5E_BEGIN_TRY{
-        if (buf) {
-            HDfree(buf);
-        }
-        (void)H5Sclose(dspace_id);
-        for (i = 0; i < CONCURRENT_COUNT; i++) {
-            (void)H5Dclose(bundle[i].dset_id);
-            (void)H5Fclose(bundle[i].file_id);
-            (void)H5Pclose(bundle[i].fapl_id);
-        }
-    } H5E_END_TRY;
-    return -1;
+  H5E_BEGIN_TRY {
+    if (buf) {
+      HDfree(buf);
+    }
+    (void)H5Sclose(dspace_id);
+    for (i = 0; i < CONCURRENT_COUNT; i++) {
+      (void)H5Dclose(bundle[i].dset_id);
+      (void)H5Fclose(bundle[i].file_id);
+      (void)H5Pclose(bundle[i].fapl_id);
+    }
+  }
+  H5E_END_TRY;
+  return -1;
 } /* end test_concurrent_access() */
 
-
 /* ---------------------------------------------------------------------------
  * Function:    main
  *
@@ -2695,77 +2567,70 @@ error:
  *              2019
  * ---------------------------------------------------------------------------
  */
-int
-main(int argc, char **argv)
-{
-    int nerrors = 0;
-	int required = MPI_THREAD_MULTIPLE;
-	int provided = 0;
+int main(int argc, char **argv) {
+  int nerrors = 0;
+  int required = MPI_THREAD_MULTIPLE;
+  int provided = 0;
 
+  MPI_Init_thread(&argc, &argv, required, &provided);
 
-	MPI_Init_thread(&argc, &argv, required, &provided);
+  h5_reset();
 
-    h5_reset();
+  g_log_stream = stdout; /* default debug/logging output stream */
 
-    g_log_stream = stdout; /* default debug/logging output stream */
+  HDprintf("Testing Subfiling VFD functionality.\n");
 
-    HDprintf("Testing Subfiling VFD functionality.\n");
+  /* -------------------- */
+  /* SETUP */
 
-    /* -------------------- */
-    /* SETUP */
-
-    /* Create directories for test-generated .h5 files
-     */
-    if (nerrors == 0) {
-        if ((HDmkdir(SUBFILING_RW_DIR, (mode_t)0755) < 0) && (errno != EEXIST)) {
-            nerrors++;
-        }
+  /* Create directories for test-generated .h5 files
+   */
+  if (nerrors == 0) {
+    if ((HDmkdir(SUBFILING_RW_DIR, (mode_t)0755) < 0) && (errno != EEXIST)) {
+      nerrors++;
     }
-    if (nerrors == 0) {
-        if ((HDmkdir(SUBFILING_WO_DIR, (mode_t)0755) < 0) && (errno != EEXIST)) {
-            nerrors++;
-        }
+  }
+  if (nerrors == 0) {
+    if ((HDmkdir(SUBFILING_WO_DIR, (mode_t)0755) < 0) && (errno != EEXIST)) {
+      nerrors++;
     }
+  }
 
-    /* -------------------- */
-    /* TESTS */
-    /* Tests return negative values; `-=' increments nerrors count */
+  /* -------------------- */
+  /* TESTS */
+  /* Tests return negative values; `-=' increments nerrors count */
 
-    if (nerrors == 0) {
-        nerrors -= test_fapl_configuration();
-        nerrors -= test_create_and_close();
-        nerrors -= test_basic_dataset_write();
+  if (nerrors == 0) {
+    nerrors -= test_fapl_configuration();
+    nerrors -= test_create_and_close();
+    nerrors -= test_basic_dataset_write();
 #if 0
         nerrors -= test_chunked_dataset_write();
         nerrors -= test_on_disk_zoo();
         nerrors -= test_vanishing_datasets();
         nerrors -= test_concurrent_access();
 #endif
-    }
+  }
 
-    if (nerrors) {
-        HDprintf("***** %d Subfiling VFD TEST%s FAILED! *****\n",
-                nerrors, nerrors > 1 ? "S" : "");
-        return EXIT_FAILURE;
-    }
+  if (nerrors) {
+    HDprintf("***** %d Subfiling VFD TEST%s FAILED! *****\n", nerrors,
+             nerrors > 1 ? "S" : "");
+    return EXIT_FAILURE;
+  }
 
-    HDprintf("All Subfiling Virtual File Driver tests passed.\n");
+  HDprintf("All Subfiling Virtual File Driver tests passed.\n");
 
-	MPI_Finalize();
-    return EXIT_SUCCESS;
+  MPI_Finalize();
+  return EXIT_SUCCESS;
 } /* end main() */
 
 #else /* H5_HAVE_SUBFILING_VFD */
 
-int
-main(void)
-{
-    h5_reset();
-    HDprintf("Testing Subfiling VFD functionality.\n");
-    HDprintf("SKIPPED - Subfiling VFD not built.\n");
-    return EXIT_SUCCESS;
+int main(void) {
+  h5_reset();
+  HDprintf("Testing Subfiling VFD functionality.\n");
+  HDprintf("SKIPPED - Subfiling VFD not built.\n");
+  return EXIT_SUCCESS;
 }
 
 #endif /* H5_HAVE_SUBFILING_VFD */
-
-
