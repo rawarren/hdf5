@@ -231,16 +231,14 @@ void __attribute__((destructor)) finalize_ioc_threads(void) {
  *
  *-------------------------------------------------------------------------
  */
-static HG_THREAD_RETURN_TYPE handle_work_request(void *arg) {
+static HG_THREAD_RETURN_TYPE handle_work_request(void *arg)
+{
   int status = 0;
   hg_thread_ret_t ret = 0;
   sf_work_request_t *msg = (sf_work_request_t *)arg;
   int64_t file_context_id = msg->header[2];
   subfiling_context_t *sf_context = NULL;
 
-  // printf("%s: from src=%d msg=%p, msg->header[0]=%ld, [1]=%ld, [2]=%ld\n",
-  // __func__, msg->source, arg, msg->header[0],msg->header[1], msg->header[2]);
-  // fflush(stdout);
   sf_context = get__subfiling_object(file_context_id);
   assert(sf_context != NULL);
 

@@ -173,29 +173,15 @@ H5_DLL char *get_ioc_selection_criteria(ioc_selection_t *);
 H5_DLL void *get__subfiling_object(int64_t object_id);
 H5_DLL hid_t fid_map_to_context(hid_t h5_fid);
 
-#ifdef H5_ALLOW_VFD_DERIVED_TYPES
-H5_DLL int init__indep_io(void *_sf_context, int64_t *sf_source_data_offset,
-                          int64_t *sf_datasize, int64_t *sf_offset,
-                          MPI_Datatype *sf_dtype, int64_t offset,
-                          int64_t elements, int dtype_extent);
-#else
 /* return arguments are vector of vectors - function return is the length
  * (depth) of the sub vectors. Note that we don't need to include the
  * MPI_Datatype return argument!
  */
-#if 1
 H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
                           int64_t *sf_source_data_offset, int64_t *sf_datasize,
-                          int64_t *f_offset, int64_t offset, int64_t elements,
+                          int64_t *f_offset, int *first_index, int *n_containers,
+						  int64_t offset, int64_t elements,
                           int dtype_extent);
-#else
-H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
-                          int64_t sf_source_data_offset[depth][ioc_total],
-                          int64_t sf_datasize[depth][ioc_total],
-                          int64_t sf_offset[depth][ioc_total], int64_t offset,
-                          int64_t elements, int dtype_extent);
-#endif
-#endif
 
 H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int fd,
                                int flags);

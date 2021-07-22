@@ -328,8 +328,7 @@ hid_t H5FD_subfiling_init(void) {
   FUNC_ENTER_NOAPI(H5I_INVALID_HID)
 
   if (H5I_VFL != H5I_get_type(H5FD_SUBFILING_g))
-    H5FD_SUBFILING_g =
-        H5FD_register(&H5FD_subfiling_g, sizeof(H5FD_class_t), FALSE);
+      H5FD_SUBFILING_g = H5FD_register(&H5FD_subfiling_g, sizeof(H5FD_class_t), FALSE);
 
   /* Set return value */
   ret_value = H5FD_SUBFILING_g;
@@ -1136,186 +1135,11 @@ static herr_t H5FD__subfiling_read(H5FD_t *_file,
   if (ioc_total > 1) {
     blocksize = sf_context->sf_blocksize_per_stripe;
     size_t max_depth = (size_t)(size / blocksize) + 2;
-    int64_t source_data_offset[max_depth][ioc_total],
-        sf_data_size[max_depth][ioc_total], sf_offset[max_depth][ioc_total];
+    int next, ioc_count = 0, ioc_start = -1;
 
-    size_t varsize = sizeof(sf_offset);
-
-    memset(source_data_offset, 0, varsize);
-    memset(sf_data_size, 0, varsize);
-    memset(sf_offset, 0, varsize);
-
-    /* Check for overflow conditions */
-    if (!H5F_addr_defined(addr))
-      HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "addr undefined, addr = %llu",
-                  (unsigned long long)addr)
-    if (REGION_OVERFLOW(addr, size))
-      HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL, "addr overflow, addr = %llu",
-                  (unsigned long long)addr)
-
-    addr += _file->base_addr;
-    addrs_cooked = TRUE; /* Follow the example of read_vector (see H5FDint.c) */
-
-    offset = (HDoff_t)addr;
-
-    /* Given the number of io concentrators, we allocate vectors (one per-ioc)
-     * to contain the translation of the IO request into a collection of io
-     * requests. The translation is accomplished in the init__indep_io function.
-     *
-     * For now, we assume we're dealing with contiguous datasets.
-     * Vector IO will probably handle the non-contiguous condition
-     */
-    count = init__indep_io(
-        sf_context, /* We use the context to look up config info */
-        max_depth, ioc_total, source_data_offset, /* (out) Memory offset */
-        sf_data_size, /* (out) Length of this contiguous block */
-        sf_offset,    /* (out) File offset */
-        offset,       /* (in)  Starting file offset */
-        size,         /* (in)  IO size */
-        1);           /* (in)  data extent of the 'type' assumes byte */
-
-    if (count > 0) {
-      int i, k;
-      /* Set ASYNC MODE:
-      H5FD_class_aio_t *async_file_ptr = (H5FD_class_aio_t *)file_ptr->sf_file;
-      uint64_t op_code_begin = xxx;
-      uint64_t op_code_complete = zzz;
-      const void *input = NULL;
-      void *output = NULL;
-      (*async_file_ptr->h5fdctl)(file_ptr->sf_file, op_code_begin, flags, input,
-      &output);
-       */
-
-      /* The 'count' variable captures the max number of IO requests to a single
-       * IOC whereas the ioc_count is the number of IOC requests per outer loop
-       * (i) and also represents the vector length being used in the call to
-       * H5FDread_vector.
-       */
-      for (i = 0; i < count; i++) {
-        /*
-         * The get__ioc_count() function simply looks at the current
-         * vector of data sizes and returns a count of non-zero values.
-         */
-        int ioc_count = get__ioc_count(ioc_total, &(sf_data_size[i][0]));
-        H5FD_mem_t type_in[ioc_count];
-        void *data_out[count][ioc_count];
-        char *databuf = (char *)buf;
-
-        /* Fill vector variables 'data_in' and 'type_in' */
-        for (k = 0; k < ioc_count; k++) {
-          data_out[i][k] = (void *)(databuf + source_data_offset[i][k]);
-          type_in[i] = type;
-        }
-        /* Ready to make the read_vector call.  Under normal circumstances
-         * this should invoke H5FD__ioc_read_vector() (see H5FDioc.c)
-         */
-        if (H5FDread_vector(file_ptr->sf_file, dxpl_id, ioc_count, type_in,
-                            sf_offset[i], sf_data_size[i], data_out[i]) < 0) {
-          HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "IOC file write failed")
-        }
-      }
-
-      /*
-   * Complete all pending IO operations.
-  (*async_file_ptr->h5fdctl)(file_ptr->sf_file, op_code_complete, flags, input,
-  &output);
-       */
-    }
-  }      /* if (ioc_total > 1) */
-  else { /* NO STRIPING:: Just a single IOC */
-    /* Check for overflow conditions */
-    if (!H5F_addr_defined(addr))
-      HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "addr undefined, addr = %llu",
-                  (unsigned long long)addr)
-    if (REGION_OVERFLOW(addr, size))
-      HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL,
-                  "addr overflow, addr = %llu, size = %llu",
-                  (unsigned long long)addr, (unsigned long long)size)
-
-    addr += _file->base_addr;
-
-    /* Follow the example of read_vector (see H5FDint.c) */
-    addrs_cooked = TRUE;
-
-    offset = (HDoff_t)addr;
-    if (H5FDread_vector(file_ptr->sf_file, dxpl_id, 1, &type, &offset, &size,
-                        &buf) < 0) {
-      HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "IOC file write failed")
-    }
-  }
-
-  addr += (haddr_t)size;
-
-  if (addrs_cooked) {
-    addr -= _file->base_addr;
-  }
-
-  /* Update current position */
-  file_ptr->pos = addr;
-  file_ptr->op = OP_READ;
-  if (file_ptr->pos > file_ptr->eof)
-    file_ptr->eof = file_ptr->pos;
-
-done:
-  if (ret_value < 0) {
-    /* Reset last file I/O information */
-    file_ptr->pos = HADDR_UNDEF;
-    file_ptr->op = OP_UNKNOWN;
-  } /* end if */
-
-  FUNC_LEAVE_NOAPI(ret_value)
-} /* end H5FD_subfiling_read() */
-
-/*-------------------------------------------------------------------------
- * Function:    H5FD__subfiling_write
- *
- * Purpose:     Writes SIZE bytes of data to FILE beginning at address ADDR
- *              from buffer BUF according to data transfer properties in
- *              DXPL_ID.
- *
- * Return:      SUCCEED/FAIL
- *
- * Programmer:  Richard Warren
- *
- *-------------------------------------------------------------------------
- */
-static herr_t H5FD__subfiling_write(H5FD_t *_file,
-                                    H5FD_mem_t H5_ATTR_UNUSED type,
-                                    hid_t H5_ATTR_UNUSED dxpl_id, haddr_t addr,
-                                    size_t size, const void *buf) {
-  H5FD_subfiling_t *file_ptr = (H5FD_subfiling_t *)_file;
-  herr_t ret_value = SUCCEED; /* Return value */
-  hbool_t addrs_cooked = FALSE;
-  subfiling_context_t *sf_context = NULL;
-  int ioc_total, count;
-  int64_t blocksize;
-  HDoff_t offset;
-
-  FUNC_ENTER_NOAPI_NOINIT
-
-  HDassert(file_ptr && file_ptr->pub.cls);
-  HDassert(buf);
-
-  sf_context = (subfiling_context_t *)get__subfiling_object(
-      file_ptr->fa.common.context_id);
-
-  HDassert(sf_context);
-  HDassert(sf_context->topology);
-
-  /* Given the current IO and the IO concentrator info
-   * we can determine some IO transaction parameters.
-   * In particular, for large IO operations, each IOC
-   * may require multiple IOs to fulfill the user IO
-   * request. The 'max_depth' variable and number of
-   * IOCs are used to size the vectors that will be
-   * used to invoke the underlying IO operations.
-   */
-  ioc_total = sf_context->topology->n_io_concentrators;
-  if (ioc_total > 1) {
-    blocksize = sf_context->sf_blocksize_per_stripe;
-    size_t max_depth = (size_t)(size / blocksize) + 2;
-    int64_t source_data_offset[max_depth][ioc_total],
-        sf_data_size[max_depth][ioc_total], sf_offset[max_depth][ioc_total];
+    int64_t source_data_offset[ioc_total][max_depth],
+            sf_data_size[ioc_total][max_depth],
+            sf_offset[ioc_total][max_depth];
 
     size_t varsize = sizeof(sf_offset);
 
@@ -1356,12 +1180,15 @@ static herr_t H5FD__subfiling_write(H5FD_t *_file,
         max_depth, ioc_total, source_data_offset, /* (out) Memory offset */
         sf_data_size, /* (out) Length of this contiguous block */
         sf_offset,    /* (out) File offset */
+        &ioc_start,	  /* (out) IOC index corresponding to starting offset */
+        &ioc_count,	  /* (out) number of actual IOCs used */
         offset,       /* (in)  Starting file offset */
         size,         /* (in)  IO size */
         1);           /* (in)  data extent of the 'type' assumes byte */
 
     if (count > 0) {
       int i, k;
+
       /* Set ASYNC MODE:
       H5FD_class_aio_t *async_file_ptr = (H5FD_class_aio_t *)file_ptr->sf_file;
       uint64_t op_code_begin = xxx;
@@ -1372,28 +1199,262 @@ static herr_t H5FD__subfiling_write(H5FD_t *_file,
       &output);
        */
 
+#if 0
+      printf("[%s] addr=%ld, size=%ld, depth=%d, ioc_count=%d, ioc_start=%d\n", 
+             __func__, offset, size, count, ioc_count, ioc_start);
+      fflush(stdout);
+#endif
+
+      /* The 'count' variable captures the max number of IO requests to a single
+       * IOC whereas the ioc_count is the number of IOC requests per outer loop
+       * (i) and also represents the vector length being used in the call to
+       * H5FDread_vector.
+       */
+      
+      for (i = 0; i < count; i++) {
+        H5FD_mem_t type_in[ioc_count];
+        int64_t data_size[ioc_count];        
+        int64_t offset_in[ioc_count];
+        void *data_in[ioc_count];
+        char *databuf = (char *)buf;
+        int vectorlen = ioc_count;
+		
+        /*
+         * Fill vector variables 'data_in' and 'type_in'
+         */
+        for (next = ioc_start, k=0; k < ioc_count; k++) {
+          offset_in[k] = sf_offset[next][i];
+          type_in[k] = type;
+          data_in[k] = databuf + source_data_offset[next][i];
+          if ((data_size[k] = sf_data_size[next][i]) == 0) {
+            vectorlen--;
+          }
+		  next = (next + 1) % ioc_count;
+        }
+
+        /* And make the read_vector call.  Under normal circumstances this
+         * should invoke H5FD__ioc_read_vector() (see H5FDioc.c)
+         */
+#if 0
+        for (k=0; k < vectorlen; k++) {
+			printf("%s (%d): v_len=%d, offset=%ld, data_size=%ld\n",
+                   __func__, k,vectorlen, offset_in[k], data_size[k]);
+            fflush(stdout);
+        }
+#endif
+        if (H5FDread_vector(file_ptr->sf_file, dxpl_id, vectorlen, type_in,
+                             offset_in, data_size, data_in) < 0) {
+          HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "IOC file write failed")
+        }
+      }
+
+      /*
+       (*async_file_ptr->h5fdctl)(file_ptr->sf_file, op_code_complete, flags, input, &output);
+       */
+    }
+  } else { /* NO STRIPING:: Just a single IOC */
+
+    /* Check for overflow conditions */
+    if (!H5F_addr_defined(addr))
+      HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "addr undefined, addr = %llu",
+                  (unsigned long long)addr)
+    if (REGION_OVERFLOW(addr, size))
+      HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL,
+                  "addr overflow, addr = %llu, size = %llu",
+                  (unsigned long long)addr, (unsigned long long)size)
+
+    addr += _file->base_addr;
+
+    /* Follow the example of read_vector (see H5FDint.c) */
+    addrs_cooked = TRUE;
+
+    offset = (HDoff_t)addr;
+    if (H5FDread_vector(file_ptr->sf_file, dxpl_id, 1, &type, &offset, &size,
+                         &buf) < 0) {
+      HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "IOC file write failed")
+    }
+  }
+
+  addr += (haddr_t)size; /* Point to the end of the current IO */
+
+  if (addrs_cooked)
+    addr -= _file->base_addr;
+
+  /* Update current position and eof */
+  file_ptr->pos = addr;
+  file_ptr->op = OP_READ;
+  if (file_ptr->pos > file_ptr->eof)
+    file_ptr->eof = file_ptr->pos;
+
+done:
+  if (ret_value < 0) {
+    /* Reset last file I/O information */
+    file_ptr->pos = HADDR_UNDEF;
+    file_ptr->op = OP_UNKNOWN;
+  } /* end if */
+
+  FUNC_LEAVE_NOAPI(ret_value)
+} /* end H5FD_subfiling_read() */
+
+
+/*-------------------------------------------------------------------------
+ * Function:    H5FD__subfiling_write
+ *
+ * Purpose:     Writes SIZE bytes of data to FILE beginning at address ADDR
+ *              from buffer BUF according to data transfer properties in
+ *              DXPL_ID.
+ *
+ * Return:      SUCCEED/FAIL
+ *
+ * Programmer:  Richard Warren
+ *
+ *-------------------------------------------------------------------------
+ */
+static herr_t H5FD__subfiling_write(H5FD_t *_file,
+                                    H5FD_mem_t H5_ATTR_UNUSED type,
+                                    hid_t H5_ATTR_UNUSED dxpl_id, haddr_t addr,
+                                    size_t size, const void *buf /*in*/) {
+  H5FD_subfiling_t *file_ptr = (H5FD_subfiling_t *)_file;
+  herr_t ret_value = SUCCEED; /* Return value */
+  hbool_t addrs_cooked = FALSE;
+  subfiling_context_t *sf_context = NULL;
+  int ioc_total, count;
+  int64_t blocksize;
+  HDoff_t offset;
+
+  FUNC_ENTER_NOAPI_NOINIT
+
+  HDassert(file_ptr && file_ptr->pub.cls);
+  HDassert(buf);
+
+  sf_context = (subfiling_context_t *)get__subfiling_object(
+      file_ptr->fa.common.context_id);
+
+  HDassert(sf_context);
+  HDassert(sf_context->topology);
+
+  /* Given the current IO and the IO concentrator info
+   * we can determine some IO transaction parameters.
+   * In particular, for large IO operations, each IOC
+   * may require multiple IOs to fulfill the user IO
+   * request. The 'max_depth' variable and number of
+   * IOCs are used to size the vectors that will be
+   * used to invoke the underlying IO operations.
+   */
+  ioc_total = sf_context->topology->n_io_concentrators;
+  if (ioc_total > 1) {
+    blocksize = sf_context->sf_blocksize_per_stripe;
+    size_t max_depth = (size_t)(size / blocksize) + 2;
+    int next, ioc_count = 0, ioc_start = -1;
+
+    int64_t source_data_offset[ioc_total][max_depth],
+            sf_data_size[ioc_total][max_depth],
+            sf_offset[ioc_total][max_depth];
+
+    size_t varsize = sizeof(sf_offset);
+
+    memset(source_data_offset, 0, varsize);
+    memset(sf_data_size, 0, varsize);
+    memset(sf_offset, 0, varsize);
+
+    /* Check for overflow conditions */
+    if (!H5F_addr_defined(addr))
+      HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "addr undefined, addr = %llu",
+                  (unsigned long long)addr)
+    if (REGION_OVERFLOW(addr, size))
+      HGOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL,
+                  "addr overflow, addr = %llu, size = %llu",
+                  (unsigned long long)addr, (unsigned long long)size)
+
+    addr += _file->base_addr;
+
+    /* Follow the example of read_vector (see H5FDint.c) */
+    addrs_cooked = TRUE;
+
+    offset = (HDoff_t)addr;
+
+    /* Given the number of io concentrators, we allocate vectors (one per-ioc)
+     * to contain the translation of the IO request into a collection of io
+     * requests. The translation is accomplished in the init__indep_io function.
+     */
+
+    /* Get the potential set of ioc transactions, i.e. data sizes,
+     * offsets, and datatypes.  These can all be used by either the
+     * underlying IOC or by sec2.
+     *
+     * For now, we assume we're dealing with contiguous datasets.
+     * Vector IO will probably handle the non-contiguous condition
+     */
+    count = init__indep_io(
+        sf_context, /* We use the context to look up config info */
+        max_depth, ioc_total, source_data_offset, /* (out) Memory offset */
+        sf_data_size, /* (out) Length of this contiguous block */
+        sf_offset,    /* (out) File offset */
+        &ioc_start,	  /* (out) IOC index corresponding to starting offset */
+        &ioc_count,	  /* (out) number of actual IOCs used */
+        offset,       /* (in)  Starting file offset */
+        size,         /* (in)  IO size */
+        1);           /* (in)  data extent of the 'type' assumes byte */
+
+    next = ioc_start;
+    if (count > 0) {
+      int i, k;
+
+      /* Set ASYNC MODE:
+      H5FD_class_aio_t *async_file_ptr = (H5FD_class_aio_t *)file_ptr->sf_file;
+      uint64_t op_code_begin = xxx;
+      uint64_t op_code_complete = zzz;
+      const void *input = NULL;
+      void *output = NULL;
+      (*async_file_ptr->h5fdctl)(file_ptr->sf_file, op_code_begin, flags, input,
+      &output);
+       */
+
+#if 0
+      printf("[%s] addr=%ld, size=%ld, depth=%d, ioc_count=%d, ioc_start=%d\n", 
+             __func__, offset, size, count, ioc_count, ioc_start);
+      fflush(stdout);
+#endif
       /* The 'count' variable captures the max number of IO requests to a single
        * IOC whereas the ioc_count is the number of IOC requests per outer loop
        * (i) and also represents the vector length being used in the call to
        * H5FDwrite_vector.
        */
+      
       for (i = 0; i < count; i++) {
-        int ioc_count = get__ioc_count(ioc_total, &(sf_data_size[i][0]));
         H5FD_mem_t type_in[ioc_count];
-        void *data_in[count][ioc_count];
+        int64_t data_size[ioc_count];        
+        int64_t offset_in[ioc_count];
+        void *data_in[ioc_count];
         char *databuf = (char *)buf;
+        int vectorlen = ioc_count;
+		
         /*
          * Fill vector variables 'data_in' and 'type_in'
          */
-        for (k = 0; k < ioc_count; k++) {
-          data_in[i][k] = (void *)(databuf + source_data_offset[i][k]);
-          type_in[i] = type;
+        for (next = ioc_start, k=0; k < ioc_count; k++) {
+          offset_in[k] = sf_offset[next][i];
+          type_in[k] = type;
+          data_in[k] = databuf + source_data_offset[next][i];
+          if ((data_size[k] = sf_data_size[next][i]) == 0) {
+            vectorlen--;
+          }
+		  next++;
+          if (next == ioc_total) next = 0;		  
         }
+
         /* And make the write_vector call.  Under normal circumstances this
          * should invoke H5FD__ioc_write_vector() (see H5FDioc.c)
          */
-        if (H5FDwrite_vector(file_ptr->sf_file, dxpl_id, ioc_count, type_in,
-                             sf_offset[i], sf_data_size[i], data_in[i]) < 0) {
+#if 0
+        for (k=0; k < vectorlen; k++) {
+			printf("%s (%d): v_len=%d, offset=%ld, data_size=%ld\n",
+                   __func__, k, vectorlen, offset_in[k], data_size[k]);
+            fflush(stdout);
+        }
+#endif
+        if (H5FDwrite_vector(file_ptr->sf_file, dxpl_id, vectorlen, type_in,
+                             offset_in, data_size, data_in) < 0) {
           HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "IOC file write failed")
         }
       }
