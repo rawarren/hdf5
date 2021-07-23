@@ -218,7 +218,7 @@ static herr_t H5FD__subfiling_read(H5FD_t *_file, H5FD_mem_t type,
                                    hid_t fapl_id, haddr_t addr, size_t size,
                                    void *buf);
 static herr_t H5FD__subfiling_write(H5FD_t *_file, H5FD_mem_t type,
-                                    hid_t fapl_id, haddr_t addr, size_t size,
+                                    hid_t dxpl_id, haddr_t addr, size_t size,
                                     const void *buf);
 
 static herr_t H5FD__subfiling_read_vector(H5FD_t *file, hid_t dxpl_id,
@@ -1071,19 +1071,6 @@ done:
   FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5FD_subfiling_get_handle() */
 
-/*
- * A simple utility function to count the number of non-zero
- * values in a vector.  Used by the read and write operations
- * to construct vectors to pass to the stacked IOC VFD.
- */
-static inline int get__ioc_count(int length, int64_t *data_size) {
-  int k, count = 0;
-  for (k = 0; k < length; k++) {
-    if (data_size[k] > 0)
-      count++;
-  }
-  return count;
-}
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD_subfiling_read
@@ -1509,7 +1496,7 @@ done:
 } /* end H5FD_subfiling_write() */
 
 /*-------------------------------------------------------------------------
- * Function:    H5FDsubfile__read_vector  (internal function)
+ * Function:    H5FD__subfile_read_vector  (internal function)
  *
  * Purpose:     Perform count reads from the specified file at the offsets
  *              provided in the addrs array, with the lengths and memory
@@ -1537,7 +1524,7 @@ static herr_t H5FD__subfiling_read_vector(H5FD_t *_file, hid_t dxpl_id,
                                           uint32_t count, H5FD_mem_t types[],
                                           haddr_t addrs[], size_t sizes[],
                                           void *bufs[] /* out */) {
-  H5FD_subfiling_t *file = (H5FD_subfiling_t *)_file;
+  H5FD_subfiling_t *file_ptr = (H5FD_subfiling_t *)_file;
   herr_t ret_value = SUCCEED; /* Return value             */
   hid_t h5_fid;
 
@@ -1547,7 +1534,7 @@ static herr_t H5FD__subfiling_read_vector(H5FD_t *_file, hid_t dxpl_id,
    * RAW - Do we really need to check arguments once again?
    * These have already been checked in H5FD_subfiling_read_vector (see below)!
    */
-  if (!file)
+  if (!file_ptr)
     HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "file pointer cannot be NULL")
 
   if ((!types) && (count > 0))
@@ -1578,19 +1565,28 @@ static herr_t H5FD__subfiling_read_vector(H5FD_t *_file, hid_t dxpl_id,
 
   /* Set DXPL for operation */
   H5CX_set_dxpl(dxpl_id);
-  h5_fid = (hid_t)file->inode;
-
-#if 0
-    if(sf_read_vector(h5_fid, count, addrs, (hsize_t *)sizes, bufs) != SUCCEED)
-        HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")
-#endif
+  h5_fid = (hid_t)file_ptr->inode;
+  if (file_ptr->fa.require_ioc) {
+    int k;
+    for (k=0; k < count; k++) {
+      if (H5FD__subfiling_read(_file, types[k], dxpl_id, addrs[k], sizes[k], bufs[k]) != SUCCEED)
+        HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "file vector read request failed")
+    }
+  } else {
+    /* sec2 driver..
+     * Call the subfiling 'direct write' version
+     * of subfiling.
+     */
+     if (H5FD_read_vector(_file, count, types, addrs, sizes, bufs) != SUCCEED)
+        HGOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "file vector read request failed")
+  }
 
 done:
   FUNC_LEAVE_NOAPI(ret_value)
-}
+} /* end H5FD__subfiling_read_vector() */
 
 /*-------------------------------------------------------------------------
- * Function:    H5FDsubfile__write_vector  (internal function)
+ * Function:    H5FD__subfile_write_vector  (internal function)
  *
  * Purpose:     Perform count writes to the specified file at the offsets
  *              provided in the addrs array. Lengths and memory
@@ -1660,16 +1656,18 @@ static herr_t H5FD__subfiling_write_vector(H5FD_t *_file, hid_t dxpl_id,
   }
   /* Call the subfiling IOC write*/
   if (file_ptr->fa.require_ioc) {
-#if 0
-        /* How do we invoke the vector write in H5FDioc.c ??? */
-        if(sf_write_vector(h5_fid, count, addrs, (hsize_t *)sizes, bufs) != SUCCEED)
-           HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")
-#endif
+    int k;
+    for (k=0; k < count; k++) {
+      if (H5FD__subfiling_write(_file, types[k], dxpl_id, addrs[k], sizes[k], bufs[k]) != SUCCEED)
+        HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")		     
+    }
   } else {
     /* sec2 driver..
      * Call the subfiling 'direct write' version
      * of subfiling.
      */
+     if (H5FD_write_vector(_file, count, types, addrs, sizes, bufs) != SUCCEED)
+        HGOTO_ERROR(H5E_VFL, H5E_WRITEERROR, FAIL, "file vector write request failed")
   }
 done:
   FUNC_LEAVE_NOAPI(ret_value)

@@ -1294,13 +1294,15 @@ static herr_t H5FD__ioc_query(const H5FD_t *_file,
 
   H5FD_IOC_LOG_CALL(FUNC);
 
-  if (file_ptr) {
-    HDassert(file_ptr);
-    HDassert(file_ptr->ioc_file);
-
-    if (H5FDquery(file_ptr->ioc_file, flags) < 0)
-      HGOTO_ERROR(H5E_VFL, H5E_CANTLOCK, FAIL, "unable to query R/W file");
-  } else {
+  if (file_ptr == NULL) {
+    if (flags)
+      *flags = 0;
+  }
+  else if (file_ptr->ioc_file) {
+	if (H5FDquery(file_ptr->ioc_file, flags) < 0)
+         HGOTO_ERROR(H5E_VFL, H5E_CANTLOCK, FAIL, "unable to query R/W file");
+  }
+  else {
     /* There is no file. Because this is a pure passthrough VFD,
      * it has no features of its own.
      */

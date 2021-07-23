@@ -2133,10 +2133,13 @@ test_basic_dataset_write(void)
         TEST_ERROR;
     }
 
-#if 0
+#if 1
 	for(i=0; i < buf_size; i++) {
-		if (buf[i] != check[i])
-           TEST_ERROR;
+		if (buf[i] != check[i]) {
+            printf("[%d] %d: buf = %d, expected = %d\n", g_mpi_rank, i, buf[i], check[i] );
+            break;
+			//TEST_ERROR;
+        }
 	}
 #endif
     /* -------------------- */
@@ -2231,12 +2234,16 @@ test_chunked_dataset_write(void)
     }
     file_id = H5I_INVALID_HID;
 
+	MPI_Barrier(MPI_COMM_WORLD);
+
     /* Reopen file
      */
     file_id = H5Fopen(names.rw, H5F_ACC_RDWR, fapl_id);
     if (H5I_INVALID_HID == file_id) {
         TEST_ERROR;
     }
+
+	MPI_Barrier(MPI_COMM_WORLD);
 
     /* Verify written data integrity
      */
@@ -2256,13 +2263,6 @@ test_chunked_dataset_write(void)
             TEST_ERROR;
         }
         fapl_id = H5I_INVALID_HID;
-    }
-
-    /* -------------------- */
-    /* TEST: Verify that the R/W and W/O files are identical */
-
-    if (h5_compare_file_bytes(names.rw, names.wo) < 0) {
-        TEST_ERROR;
     }
 
     PASSED();
