@@ -138,44 +138,43 @@ H5_DLL haddr_t H5FD_get_eoa(const H5FD_t *file, H5FD_mem_t type);
 H5_DLL herr_t H5FD_set_eoa(H5FD_t *file, H5FD_mem_t type, haddr_t addr);
 H5_DLL haddr_t H5FD_get_eof(const H5FD_t *file, H5FD_mem_t type);
 H5_DLL haddr_t H5FD_get_maxaddr(const H5FD_t *file);
-H5_DLL herr_t H5FD_get_feature_flags(const H5FD_t *file,
-                                     unsigned long *feature_flags);
-H5_DLL herr_t H5FD_set_feature_flags(H5FD_t *file, unsigned long feature_flags);
-H5_DLL herr_t H5FD_get_fs_type_map(const H5FD_t *file, H5FD_mem_t *type_map);
-H5_DLL herr_t H5FD_read(H5FD_t *file, H5FD_mem_t type, haddr_t addr,
-                        size_t size, void *buf /*out*/);
-H5_DLL herr_t H5FD_write(H5FD_t *file, H5FD_mem_t type, haddr_t addr,
-                         size_t size, const void *buf);
-H5_DLL herr_t H5FD_read_vector(H5FD_t *file, uint32_t count, H5FD_mem_t types[],
-                               haddr_t addrs[], size_t sizes[],
-                               void *bufs[] /* out */);
-H5_DLL herr_t H5FD_write_vector(H5FD_t *file, uint32_t count,
-                                H5FD_mem_t types[], haddr_t addrs[],
-                                size_t sizes[], const void *bufs[] /* out */);
-H5_DLL herr_t H5FD_read_selection(H5FD_t *file, uint32_t count, H5FD_mem_t type,
-                                  H5S_t *mem_spaces[], H5S_t *file_spaces[],
-                                  haddr_t offsets[], size_t element_sizes[],
-                                  void *bufs[] /* out */);
-H5_DLL herr_t H5FD_write_selection(H5FD_t *file, uint32_t count,
-                                   H5FD_mem_t type, H5S_t *mem_spaces[],
-                                   H5S_t *file_spaces[], haddr_t offsets[],
-                                   size_t element_sizes[], const void *bufs[]);
-H5_DLL herr_t H5FD_flush(H5FD_t *file, hbool_t closing);
-H5_DLL herr_t H5FD_truncate(H5FD_t *file, hbool_t closing);
-H5_DLL herr_t H5FD_lock(H5FD_t *file, hbool_t rw);
-H5_DLL herr_t H5FD_unlock(H5FD_t *file);
-H5_DLL herr_t H5FD_get_fileno(const H5FD_t *file, unsigned long *filenum);
-H5_DLL herr_t H5FD_get_vfd_handle(H5FD_t *file, hid_t fapl, void **file_handle);
-H5_DLL herr_t H5FD_set_base_addr(H5FD_t *file, haddr_t base_addr);
+H5_DLL herr_t  H5FD_get_feature_flags(const H5FD_t *file, unsigned long *feature_flags);
+H5_DLL herr_t  H5FD_set_feature_flags(H5FD_t *file, unsigned long feature_flags);
+H5_DLL herr_t  H5FD_get_fs_type_map(const H5FD_t *file, H5FD_mem_t *type_map);
+H5_DLL herr_t  H5FD_read(H5FD_t *file, H5FD_mem_t type, haddr_t addr, size_t size, void *buf /*out*/);
+H5_DLL herr_t  H5FD_write(H5FD_t *file, H5FD_mem_t type, haddr_t addr, size_t size, const void *buf);
+H5_DLL herr_t  H5FD_read_vector(H5FD_t *file, uint32_t count, H5FD_mem_t types[], haddr_t addrs[],
+                                size_t sizes[], void *bufs[] /* out */);
+H5_DLL herr_t  H5FD_write_vector(H5FD_t *file, uint32_t count, H5FD_mem_t types[], haddr_t addrs[],
+                                 size_t sizes[], const void *bufs[] /* out */);
+H5_DLL herr_t  H5FD_read_selection(H5FD_t *file, H5FD_mem_t type, uint32_t count, H5S_t *mem_spaces[],
+                                   H5S_t *file_spaces[], haddr_t offsets[], size_t element_sizes[],
+                                   void *bufs[] /* out */);
+H5_DLL herr_t  H5FD_write_selection(H5FD_t *file, H5FD_mem_t type, uint32_t count, H5S_t *mem_spaces[],
+                                    H5S_t *file_spaces[], haddr_t offsets[], size_t element_sizes[],
+                                    const void *bufs[]);
+H5_DLL herr_t  H5FD_read_selection_id(H5FD_t *file, H5FD_mem_t type, uint32_t count, hid_t mem_space_ids[],
+                                      hid_t file_space_ids[], haddr_t offsets[], size_t element_sizes[],
+                                      void *bufs[] /* out */);
+H5_DLL herr_t  H5FD_write_selection_id(H5FD_t *file, H5FD_mem_t type, uint32_t count, hid_t mem_space_ids[],
+                                       hid_t file_space_ids[], haddr_t offsets[], size_t element_sizes[],
+                                       const void *bufs[]);
+H5_DLL herr_t  H5FD_flush(H5FD_t *file, hbool_t closing);
+H5_DLL herr_t  H5FD_truncate(H5FD_t *file, hbool_t closing);
+H5_DLL herr_t  H5FD_lock(H5FD_t *file, hbool_t rw);
+H5_DLL herr_t  H5FD_unlock(H5FD_t *file);
+H5_DLL herr_t  H5FD_ctl(H5FD_t *file, uint64_t op_code, uint64_t flags, const void *input, void **output);
+H5_DLL herr_t  H5FD_get_fileno(const H5FD_t *file, unsigned long *filenum);
+H5_DLL herr_t  H5FD_get_vfd_handle(H5FD_t *file, hid_t fapl, void **file_handle);
+H5_DLL herr_t  H5FD_set_base_addr(H5FD_t *file, haddr_t base_addr);
+
 H5_DLL haddr_t H5FD_get_base_addr(const H5FD_t *file);
 H5_DLL herr_t H5FD_set_paged_aggr(H5FD_t *file, hbool_t paged);
 
-H5_DLL herr_t H5FD_sort_vector_io_req(hbool_t *vector_was_sorted,
-                                      uint32_t count, H5FD_mem_t types[],
-                                      haddr_t addrs[], size_t sizes[],
-                                      void *bufs[], H5FD_mem_t **s_types_ptr,
-                                      haddr_t **s_addrs_ptr,
-                                      size_t **s_sizes_ptr, void ***s_bufs_ptr);
+H5_DLL herr_t H5FD_sort_vector_io_req(hbool_t *vector_was_sorted, uint32_t count, H5FD_mem_t types[],
+                                      haddr_t addrs[], size_t sizes[], const void *bufs[],
+                                      H5FD_mem_t **s_types_ptr, haddr_t **s_addrs_ptr, size_t **s_sizes_ptr,
+                                      void ***s_bufs_ptr);
 
 /* Function prototypes for MPI based VFDs*/
 #ifdef H5_HAVE_PARALLEL
@@ -191,9 +190,9 @@ H5_DLL herr_t H5FD_set_mpio_atomicity(H5FD_t *file, hbool_t flag);
 H5_DLL herr_t H5FD_get_mpio_atomicity(H5FD_t *file, hbool_t *flag);
 
 /* Driver specific methods */
-H5_DLL int H5FD_mpi_get_rank(const H5FD_t *file);
-H5_DLL int H5FD_mpi_get_size(const H5FD_t *file);
-H5_DLL MPI_Comm H5FD_mpi_get_comm(const H5FD_t *_file);
+H5_DLL int      H5FD_mpi_get_rank(H5FD_t *file);
+H5_DLL int      H5FD_mpi_get_size(H5FD_t *file);
+H5_DLL MPI_Comm H5FD_mpi_get_comm(H5FD_t *file);
 #endif /* H5_HAVE_PARALLEL */
 
 #endif /* !_H5FDprivate_H */

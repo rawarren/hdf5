@@ -179,10 +179,13 @@ static const H5FD_class_t H5FD_core_g = {
     H5FD__core_write,         /* write                */
     NULL,                     /* read_vector          */
     NULL,                     /* write_vector         */
+    NULL,                     /* read_selection       */
+    NULL,                     /* write_selection      */
     H5FD__core_flush,         /* flush                */
     H5FD__core_truncate,      /* truncate             */
     H5FD__core_lock,          /* lock                 */
     H5FD__core_unlock,        /* unlock               */
+    NULL,                     /* ctl                  */
     H5FD_FLMAP_DICHOTOMY      /* fl_map               */
 };
 

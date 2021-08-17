@@ -307,10 +307,13 @@ static const H5FD_class_t H5FD_hdfs_g = {
     H5FD__hdfs_write,         /* write                */
     NULL,                     /* read_vector          */
     NULL,                     /* write_vector         */
+    NULL,                     /* read_selection       */
+    NULL,                     /* write_selection      */
     NULL,                     /* flush                */
     H5FD__hdfs_truncate,      /* truncate             */
     NULL,                     /* lock                 */
     NULL,                     /* unlock               */
+    NULL,                     /* ctl                  */
     H5FD_FLMAP_DICHOTOMY      /* fl_map               */
 };
 

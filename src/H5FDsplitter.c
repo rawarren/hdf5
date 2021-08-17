@@ -160,10 +160,13 @@ static const H5FD_class_t H5FD_splitter_g = {
     H5FD__splitter_write,         /* write                */
     NULL,                         /* read_vector          */
     NULL,                         /* write_vector         */
+    NULL,                         /* read_selection       */
+    NULL,                         /* write_selection      */
     H5FD__splitter_flush,         /* flush                */
     H5FD__splitter_truncate,      /* truncate             */
     H5FD__splitter_lock,          /* lock                 */
     H5FD__splitter_unlock,        /* unlock               */
+    NULL,                         /* ctl                  */
     H5FD_FLMAP_DICHOTOMY          /* fl_map               */
 };
 
