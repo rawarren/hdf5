@@ -230,13 +230,23 @@ static herr_t H5FD__subfiling_write_vector(H5FD_t *file, hid_t dxpl_id,
                                            haddr_t addrs[], size_t sizes[],
                                            const void *bufs[] /* in */);
 
+static herr_t H5FD__subfiling_read_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*out*/);
+static herr_t H5FD__subfiling_write_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*in*/);
+
 static herr_t H5FD__subfiling_truncate(H5FD_t *_file, hid_t dxpl_id,
                                        hbool_t closing);
 static herr_t H5FD__subfiling_lock(H5FD_t *_file, hbool_t rw);
 static herr_t H5FD__subfiling_unlock(H5FD_t *_file);
 
-static herr_t
-H5FD__subfiling_validate_config(const H5FD_subfiling_config_t *fa);
+static herr_t H5FD__subfiling_validate_config(const H5FD_subfiling_config_t *fa);
 static int H5FD__subfiling_mpi_rank(const H5FD_t *_file);
 static int H5FD__subfiling_mpi_size(const H5FD_t *_file);
 static MPI_Comm H5FD__subfiling_communicator(const H5FD_t *_file);
@@ -273,10 +283,13 @@ static const H5FD_class_mpi_t H5FD_subfiling_g = {
         H5FD__subfiling_write,           /* write                */
         H5FD__subfiling_read_vector,     /* read_vector          */
         H5FD__subfiling_write_vector,    /* write_vector         */
+        H5FD__subfiling_read_selection,  /* read_selection       */
+        H5FD__subfiling_write_selection, /* write_selection      */
         NULL,                            /* flush                */
         H5FD__subfiling_truncate,        /* truncate             */
         NULL,                            /* lock                 */
         NULL,                            /* unlock               */
+        NULL,                            /* ctl                  */
         H5FD_FLMAP_DICHOTOMY             /* fl_map               */
     },
     H5FD__subfiling_mpi_rank,
@@ -458,7 +471,8 @@ done:
  *-------------------------------------------------------------------------
  */
 static herr_t
-H5FD__subfiling_validate_config(const H5FD_subfiling_config_t *fa) {
+H5FD__subfiling_validate_config(const H5FD_subfiling_config_t *fa)
+{
   herr_t ret_value = SUCCEED;
 
   FUNC_ENTER_NOAPI_NOINIT
@@ -1673,6 +1687,34 @@ done:
   FUNC_LEAVE_NOAPI(ret_value)
 
 } /* end H5FDsubfile__write_vector() */
+
+/* Empty function for now... */
+static herr_t H5FD__subfiling_read_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*out*/)
+{
+  herr_t ret_value = SUCCEED; /* Return value */
+  FUNC_ENTER_STATIC
+  printf("Entered %s\n", __func__);
+done:
+  FUNC_LEAVE_NOAPI(ret_value)
+}
+
+/* Empty function for now... */
+static herr_t H5FD__subfiling_write_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*in*/)
+{
+  herr_t ret_value = SUCCEED; /* Return value */
+  FUNC_ENTER_STATIC
+  printf("Entered %s\n", __func__);
+done:
+  FUNC_LEAVE_NOAPI(ret_value)
+}
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD_subfiling_truncate

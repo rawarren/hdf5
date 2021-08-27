@@ -329,7 +329,7 @@ bool tpool_is_empty(void) { return HG_QUEUE_IS_EMPTY(&ioc_thread_pool->queue); }
  *
  *-------------------------------------------------------------------------
  */
-int begin_thread_exclusive(void) {
+void begin_thread_exclusive(void) {
   return hg_thread_mutex_lock(&ioc_thread_mutex);
 }
 
@@ -348,7 +348,7 @@ int begin_thread_exclusive(void) {
  *
  *-------------------------------------------------------------------------
  */
-int end_thread_exclusive(void) {
+void end_thread_exclusive(void) {
   return hg_thread_mutex_unlock(&ioc_thread_mutex);
 }
 

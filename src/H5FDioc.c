@@ -165,6 +165,16 @@ static herr_t H5FD__ioc_write_vector(H5FD_t *file, hid_t dxpl_id,
                                      uint32_t count, H5FD_mem_t types[],
                                      haddr_t addrs[], size_t sizes[],
                                      const void *bufs[] /* in */);
+static herr_t H5FD__ioc_read_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*out*/);
+static herr_t H5FD__ioc_write_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*in*/);
 static herr_t H5FD__ioc_flush(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_truncate(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_lock(H5FD_t *_file, hbool_t rw);
@@ -202,10 +212,13 @@ static const H5FD_class_t H5FD_ioc_g = {
     H5FD__ioc_write,           /* write                */
     H5FD__ioc_read_vector,     /* read_vector          */
     H5FD__ioc_write_vector,    /* write_vector         */
+	H5FD__ioc_read_selection,  /* read_selection       */
+    H5FD__ioc_write_selection, /* read_selection       */
     H5FD__ioc_flush,           /* flush                */
     H5FD__ioc_truncate,        /* truncate             */
     H5FD__ioc_lock,            /* lock                 */
     H5FD__ioc_unlock,          /* unlock               */
+    NULL,					   /* ctl                  */
     H5FD_FLMAP_DICHOTOMY       /* fl_map               */
 };
 
@@ -646,6 +659,34 @@ done:
 
   FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5FDioc__write_vector() */
+
+/* Empty function for now... */
+static herr_t H5FD__ioc_read_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*out*/)
+{
+  herr_t ret_value = SUCCEED; /* Return value */
+  FUNC_ENTER_STATIC
+  printf("Entered %s\n", __func__);
+done:
+  FUNC_LEAVE_NOAPI(ret_value)
+}
+
+/* Empty function for now... */
+static herr_t H5FD__ioc_write_selection(H5FD_t *file, H5FD_mem_t type,
+                                       hid_t dxpl_id, size_t count,
+                                       hid_t mem_spaces[], hid_t file_spaces[],
+                                       haddr_t offsets[], size_t element_sizes[],
+                                       void *bufs[] /*in*/)
+{
+  herr_t ret_value = SUCCEED; /* Return value */
+  FUNC_ENTER_STATIC
+  printf("Entered %s\n", __func__);
+done:
+  FUNC_LEAVE_NOAPI(ret_value)
+}
 
 /*-------------------------------------------------------------------------
  * Function:    H5FD__ioc_fapl_get
