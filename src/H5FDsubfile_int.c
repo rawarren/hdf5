@@ -404,7 +404,8 @@ open_subfile_with_context(subfiling_context_t *sf_context, hid_t fid, int fd, in
 
     MPI_Allreduce(&l_errors, &g_errors, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     if (g_errors) {
-        printf("[%s %d]: error count = %d\n", __func__, sf_context->topology->app_layout->world_rank, g_errors);
+        printf("[%s %d]: l_errors(%d) g_errors=%d\n", __func__,
+			   sf_context->topology->app_layout->world_rank, l_errors, g_errors);
         fflush(stdout);
     }
     return g_errors;
