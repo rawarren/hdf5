@@ -42,27 +42,13 @@
 #include "H5MMprivate.h" /* Memory management                        */
 #include "H5Pprivate.h"  /* Property lists                           */
 #include "H5private.h"   /* Generic Functions                        */
-// #include "H5FDioc.h"
+#include "H5FDioc.h"
 
 #include "mpi.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/*
- *    Define the various constants to allow different allocations
- *    of subfile ranks.  The choices are self explanatory, starting
- *    with the default of one IO Concentrator (IOC) per node and
- *    lastly, defining a fixed number.
- */
-typedef enum {
-  SELECT_IOC_ONE_PER_NODE = 0, /* Default */
-  SELECT_IOC_EVERY_NTH_RANK,   /* Starting at rank 0, select-next += N */
-  SELECT_IOC_WITH_CONFIG,      /* NOT IMPLEMENTED: Read-from-file       */
-  SELECT_IOC_TOTAL,            /* Starting at rank 0, mpi_size / total   */
-  ioc_selection_options        /* (Uses same selection as every Nth rank) */
-} ioc_selection_t;
 
 /****************************************************************************
  *
@@ -158,21 +144,6 @@ typedef enum {
 #define H5FD_CURR_IOC_FAPL_T_VERSION 1
 #define H5FD_IOC_FAPL_T_MAGIC 0xFED21331
 #endif
-
-#define H5FD_SUBFILING_PATH_MAX 4096
-
-typedef struct config_common_t {
-  uint32_t magic;                /* set to H5FD_SUBFILING_FAPL_T_MAGIC */
-  uint32_t version;              /* set to H5FD_CURR_SUBFILING_FAPL_T_VERSION */
-  int32_t stripe_count;          /* How many io concentrators */
-  int64_t stripe_depth;          /* Max # of bytes in contigious IO to an IOC */
-  ioc_selection_t ioc_selection; /* Method to select IO Concentrators */
-  hid_t ioc_fapl_id;             /* The hid_t value of the stacked VFD  */
-  int64_t context_id;            /* The value used to lookup an IOC context */
-  char
-      file_dir[H5FD_SUBFILING_PATH_MAX + 1]; /* Directory where we find files */
-  char file_path[H5FD_SUBFILING_PATH_MAX + 1]; /* The user define filename */
-} config_common_t;
 
 #define DRIVER_INFO_MESSAGE_MAX_INFO 65536
 #define DRIVER_INFO_MESSAGE_MAX_LENGTH                                         \
@@ -328,7 +299,7 @@ typedef struct topology {
 
 typedef struct {
   hid_t sf_context_id;   /* Generated context ID which embeds the cache index */
-  hid_t h5_file_id;      /* GUID (basically the inode value) */
+  uint64_t h5_file_id;   /* GUID (basically the inode value) */
   int sf_fid;            /* value returned by open(file,..)  */
   size_t sf_write_count; /* Statistics: write_count  */
   size_t sf_read_count;  /* Statistics: read_count  */
@@ -365,7 +336,7 @@ typedef struct {
 } sf_work_request_t;
 
 typedef struct {       /* Format of a context map entry  */
-  hid_t h5_file_id;    /* key value (linear search of the cache) */
+  uint64_t h5_file_id; /* key value (linear search of the cache) */
   hid_t sf_context_id; /* The return value if matching h5_file_id */
 } file_map_to_context_t;
 

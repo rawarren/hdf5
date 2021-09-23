@@ -719,6 +719,10 @@ static H5FD_t *H5FD__subfiling_open(const char *name, unsigned flags,
   if (NULL == file_ptr)
     HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate file struct")
 
+  /* Get some basic MPI information */
+  MPI_Comm_size(MPI_COMM_WORLD, &file_ptr->mpi_size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &file_ptr->mpi_rank);
+
   /* Get the driver-specific file access properties */
   plist_ptr = (H5P_genplist_t *)H5I_object(subfiling_fapl_id);
   if (NULL == plist_ptr)
@@ -756,7 +760,6 @@ static H5FD_t *H5FD__subfiling_open(const char *name, unsigned flags,
     file_ptr->fa.require_ioc = true;
   } else if (strncmp(driver->name, "sec2", 4) == 0) {
     uint64_t inode_id = (uint64_t)-1;
-    int mpi_rank, mpi_size;
     int ioc_flags = O_RDWR;
 
     /* Translate the HDF5 file open flags into standard POSIX open flags */
@@ -765,12 +768,8 @@ static H5FD_t *H5FD__subfiling_open(const char *name, unsigned flags,
     if (flags & H5F_ACC_CREAT)
       ioc_flags |= O_CREAT;
 
-    /* Get some basic MPI information */
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-
     /* Let MPI rank 0 to the file stat operation and broadcast a result */
-    if (mpi_rank == 0) {
+    if (file_ptr->mpi_rank == 0) {
       if (file_ptr->sf_file) {
         H5FD_sec2_t *hdf_file = (H5FD_sec2_t *)file_ptr->sf_file;
         h5_stat_t sb;
@@ -798,8 +797,7 @@ static H5FD_t *H5FD__subfiling_open(const char *name, unsigned flags,
 
     /* See: H5FDsubfile_int.c:
      * Note that the user defined HDF5 file is also considered subfile(0) */
-    if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, file_ptr->fd,
-                            ioc_flags) < 0)
+    if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, ioc_flags) < 0)
       HGOTO_ERROR(H5E_FILE, H5E_CANTOPENFILE, NULL,
                   "unable to open subfiling files = %s\n", name)
   } else {
@@ -849,6 +847,11 @@ static herr_t H5FD__subfiling_close(H5FD_t *_file) {
   if (H5FD_close(file_ptr->sf_file) != SUCCEED) {
     HSYS_GOTO_ERROR(H5E_IO, H5E_CANTCLOSEFILE, FAIL, "unable to close file")
   }
+
+  /* if set, close the copy of the plist for the underlying VFD. */
+  if ( (H5I_INVALID_HID != file_ptr->fa.common.ioc_fapl_id) &&
+       (H5I_dec_ref(file_ptr->fa.common.ioc_fapl_id) < 0) )
+    HGOTO_ERROR(H5E_VFL, H5E_ARGS, FAIL, "can't close ioc FAPL")
 
   /* Release the file info */
   file_ptr = H5FL_FREE(H5FD_subfiling_t, file_ptr);
@@ -1186,7 +1189,7 @@ static herr_t H5FD__subfiling_read(H5FD_t *_file,
       &output);
        */
 
-#if 0
+#ifdef VERBOSE
       printf("[%s] addr=%ld, size=%ld, depth=%d, ioc_count=%d, ioc_start=%d\n", 
              __func__, offset, size, count, ioc_count, ioc_start);
       fflush(stdout);
@@ -1222,7 +1225,7 @@ static herr_t H5FD__subfiling_read(H5FD_t *_file,
         /* And make the read_vector call.  Under normal circumstances this
          * should invoke H5FD__ioc_read_vector() (see H5FDioc.c)
          */
-#if 0
+#ifdef VERBOSE
         for (k=0; k < vectorlen; k++) {
 			printf("%s (%d): v_len=%d, offset=%ld, data_size=%ld\n",
                    __func__, k,vectorlen, offset_in[k], data_size[k]);
@@ -1397,7 +1400,7 @@ static herr_t H5FD__subfiling_write(H5FD_t *_file,
       &output);
        */
 
-#if 0
+#ifdef VERBOSE
       printf("[%s] addr=%ld, size=%ld, depth=%d, ioc_count=%d, ioc_start=%d\n", 
              __func__, offset, size, count, ioc_count, ioc_start);
       fflush(stdout);
@@ -1433,7 +1436,7 @@ static herr_t H5FD__subfiling_write(H5FD_t *_file,
         /* And make the write_vector call.  Under normal circumstances this
          * should invoke H5FD__ioc_write_vector() (see H5FDioc.c)
          */
-#if 0
+#ifdef VERBOSE
         for (k=0; k < vectorlen; k++) {
 			printf("%s (%d): v_len=%d, offset=%ld, data_size=%ld\n",
                    __func__, k, vectorlen, offset_in[k], data_size[k]);

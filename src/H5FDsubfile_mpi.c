@@ -31,8 +31,8 @@ static double sf_queue_delay_time = 0.0;
  * intend to use the user defined HDF5 filename for a
  * zeroth subfile as well as for all metadata.
  */
-#define SF_FILENAME_TEMPLATE "%ld_node_local_temp_%d_of_%d"
-static const char *sf_filename_template = SF_FILENAME_TEMPLATE;
+#define SF_NODE_LOCAL_TEMPLATE "%ld_node_local_%d_of_%d"
+#define SF_FILENAME_TEMPLATE "%ld_subfile_%d_of_%d"
 
 static int *request_count_per_rank = NULL;
 
@@ -115,12 +115,21 @@ client_xfer_info_t *client_ops = NULL;
 #define DEFAULT_STRIPE_SIZE M(32)
 #define MAX_DEPTH 1024
 
+
 /*
 =========================================
 Private functions
 =========================================
 */
 
+static inline void *cast_to_void(const void *data) {
+  union {
+	  const void *const_ptr_to_data;
+	  void *ptr_to_data;
+  } eliminate_const_warning;
+  eliminate_const_warning.const_ptr_to_data = data;
+  return eliminate_const_warning.ptr_to_data;
+}
 static char *get_ioc_subfile_path(int ioc, int ioc_count,
                                   subfiling_context_t *sf_context);
 static int async_completion(void *arg);
@@ -180,7 +189,7 @@ static void H5FD__create_first_mpi_type(
   io_offset[0] = src_offset;
   io_datasize[0] = first_io;
   io_f_offset[0] = f_offset;
-#if 0
+#ifdef VERBOSE
   printf("[%s] 0: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
          __func__, src_offset, first_io, f_offset);
   fflush(stdout);
@@ -196,7 +205,7 @@ static void H5FD__create_first_mpi_type(
       io_datasize[k] = stripe_size;
       io_f_offset[k] = f_offset;
       total_bytes += stripe_size;
-#if 0
+#ifdef VERBOSE
       printf("[%s] %d: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
              __func__, k, next_offset, stripe_size, f_offset);
       fflush(stdout);
@@ -249,7 +258,6 @@ static void H5FD__create_final_mpi_type(subfiling_context_t *context,
                                         int64_t *io_f_offset, int64_t last_io) {
   int64_t stripe_size = context->sf_stripe_size;
   int64_t blocksize_per_stripe = context->sf_blocksize_per_stripe;
-  int64_t offset_in_stripe = f_offset % stripe_size;
   int64_t next_offset = src_offset;
   int64_t total_bytes = 0;
 
@@ -257,7 +265,7 @@ static void H5FD__create_final_mpi_type(subfiling_context_t *context,
     io_offset[0] = src_offset;
     io_f_offset[0] = f_offset;
     io_datasize[0] = last_io;
-#if 0
+#ifdef VERBOSE
     printf("[%s] 0: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
          __func__, src_offset, last_io, f_offset);
     fflush(stdout);
@@ -271,7 +279,7 @@ static void H5FD__create_final_mpi_type(subfiling_context_t *context,
       io_offset[k] = next_offset;
       io_datasize[k] = stripe_size;
       io_f_offset[k] = f_offset;
-#if 0
+#ifdef VERBOSE
       printf("[%s] %d: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
              __func__, k, next_offset, stripe_size, f_offset);
       fflush(stdout);
@@ -333,7 +341,7 @@ static void H5FD__create_f_l_mpi_type(subfiling_context_t *context,
   io_datasize[0] = first_io;
   io_f_offset[0] = f_offset;
 
-#if 0
+#ifdef VERBOSE
   printf("[%s] 0: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
          __func__, src_offset, first_io, f_offset);
   fflush(stdout);
@@ -350,7 +358,7 @@ static void H5FD__create_f_l_mpi_type(subfiling_context_t *context,
       io_datasize[k] = stripe_size;
       io_f_offset[k] = f_offset;
       total_bytes += stripe_size;
-#if 0
+#ifdef VERBOSE
       printf("[%s] %d: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
              __func__, k, next_offset, stripe_size, f_offset);
       fflush(stdout);
@@ -361,7 +369,7 @@ static void H5FD__create_f_l_mpi_type(subfiling_context_t *context,
     io_datasize[ioc_depth] = last_io;
     io_f_offset[ioc_depth] = f_offset;
     io_offset[ioc_depth] = next_offset;
-#if 0
+#ifdef VERBOSE
     printf("[%s] %d: mem_offset=%ld, datasize=%ld, f_offset=%ld\n",
            __func__, k, next_offset, last_io, f_offset);
     fflush(stdout);
@@ -496,7 +504,7 @@ static void H5FD__create_mpi_uniform_type(subfiling_context_t *context,
  *-------------------------------------------------------------------------
  */
 
-int init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
+int init__indep_io(void *_sf_context, size_t maxdepth, int H5_ATTR_PARALLEL_UNUSED ioc_total,
                    int64_t *sf_source_data_offset, int64_t *sf_datasize,
                    int64_t *sf_offset, int *first_index, int *n_containers,
 				   int64_t offset, int64_t elements,
@@ -536,7 +544,6 @@ int init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
    */
 
   for (i = 0, k = (int)ioc_start; i < container_count; i++) {
-    int index;
     /* We use 'output_offset' as an index into a linear
      * version of a 2D array. In 'C' the last subscript
      * is the one that varies most rapidly.
@@ -544,7 +551,7 @@ int init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
      * array[ container_count ][ maxdepth ]
      */
     size_t depthsize = maxdepth * sizeof(int64_t); /* ONLY used for memset */
-    int output_offset = k * maxdepth;
+    size_t output_offset = (size_t)(k) * maxdepth;
     int container_depth = depth;
 
     hbool_t is_first = false, is_last = false;
@@ -675,18 +682,17 @@ int init__indep_io(void *_sf_context, size_t maxdepth, int ioc_total,
  * Changes:     Initial Version/None.
  *-------------------------------------------------------------------------
  */
+#define WORLD_SIZE(ctx) ((ctx)->topology->app_layout->world_size)
+#define WORLD_RANK(ctx) ((ctx)->topology->app_layout->world_size)
+
 static int read__independent_async(int n_io_concentrators, hid_t context_id,
                                    int64_t offset, int64_t elements,
-                                   int dtype_extent, void *data,
-                                   io_req_t **io_req) {
-  int sf_world_size, sf_world_rank;
-  int status = 0, errors = 0;
-  int64_t stripe_size, ioc_row, start_id, ioc_start, ioc_offset,
-      offset_in_stripe;
+                                   int H5_ATTR_PARALLEL_UNUSED dtype_extent,
+                                   void *data,io_req_t **io_req) {
+  int status = 0;
+  int64_t stripe_size, ioc_row, start_id, ioc_start, ioc_offset;
   int *io_concentrator = NULL;
-  int *subfile_fd = NULL;
   io_req_t *sf_io_request = NULL;
-  useconds_t delay = 10;
   int64_t msg[3] = {0, };
 
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
@@ -709,16 +715,13 @@ static int read__independent_async(int n_io_concentrators, hid_t context_id,
    */
   assert(io_req);
 
-  sf_world_size = sf_context->topology->app_layout->world_size;
-  sf_world_rank = sf_context->topology->app_layout->world_rank;
-
   /* Prepare an IO request.
    * This gets sent to the ioc identified by the file offset
    */
   msg[0] = elements;
   msg[1] = ioc_offset;
   msg[2] = context_id;
-#if 0
+#ifdef VERBOSE
   printf("[%s ioc(%ld)] elements=%ld, offset=%ld, file_offset=%ld\n",
          __func__, ioc_start, elements, offset, ioc_offset);
   fflush(stdout);
@@ -732,7 +735,7 @@ static int read__independent_async(int n_io_concentrators, hid_t context_id,
     MPI_Error_string(status, estring, &len);
     printf("[%d] ERROR! MPI_Send request header (%ld) "
            "bytes to %d returned an error(%s)\n",
-           sf_world_rank, sizeof(msg), io_concentrator[ioc_start], estring);
+           WORLD_RANK(sf_context), sizeof(msg), io_concentrator[ioc_start], estring);
     fflush(stdout);
     return -1;
   }
@@ -797,7 +800,7 @@ static char *get_ioc_subfile_path(int ioc, int ioc_count,
   char *prefix = sf_context->subfile_prefix;
 
   if (prefix != NULL) {
-    sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, prefix,
+    sprintf(filepath, "%s/" SF_NODE_LOCAL_TEMPLATE, prefix,
             sf_context->h5_file_id, ioc, ioc_count);
   } else {
     strcpy(filepath, sf_context->filename);
@@ -847,10 +850,8 @@ static int progress_this_pending_io(io_req_t *this_req) {
  */
 static int write_data(io_func_t *this_func) {
   int ioc, status;
-  hid_t context_id;
-  int64_t offset, elements;
+  int64_t elements;
   void *data;
-  MPI_Request *io_req = NULL;
   int *io_concentrator = NULL;
   subfiling_context_t *sf_context = NULL;
   assert(this_func);
@@ -961,14 +962,12 @@ static int async_completion(void *arg) {
  */
 static int write__independent_async(int n_io_concentrators, hid_t context_id,
                                     int64_t offset, int64_t elements,
-                                    int dtype_extent, void *data,
-                                    io_req_t **io_req) {
-  int sf_world_size, sf_world_rank;
-  int ack = 0, active_sends = 0, n_waiting = 0, status = 0, errors = 0;
-  int64_t stripe_size, ioc_row, start_id, ioc_start, ioc_offset,
-      offset_in_stripe;
+                                    int H5_ATTR_PARALLEL_UNUSED dtype_extent,
+                                    const void *data, io_req_t **io_req) {
+
+  int ack = 0, active_sends = 0, n_waiting = 0, status = 0;
+  int64_t stripe_size, ioc_row, start_id, ioc_start, ioc_offset;
   int *io_concentrator = NULL;
-  int *subfile_fd = NULL;
   io_req_t *sf_io_request = NULL;
   MPI_Request ackrequest;
   int64_t msg[3] = {0, };
@@ -992,8 +991,6 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
    */
   assert(io_req);
 
-  sf_world_size = sf_context->topology->app_layout->world_size;
-  sf_world_rank = sf_context->topology->app_layout->world_rank;
 
   /* Prepare an IO request.
    * This gets sent to the ioc identified by the file offset.
@@ -1002,7 +999,7 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
   msg[0] = elements;
   msg[1] = ioc_offset;
   msg[2] = context_id;
-#if 0
+#ifdef VERBOSE
   printf("[%s ioc(%ld)] elements=%ld, offset=%ld, file_offset=%ld\n",
          __func__, ioc_start, elements, offset, ioc_offset);
   fflush(stdout);
@@ -1016,7 +1013,7 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
     MPI_Error_string(status, estring, &len);
     printf("[%d] ERROR! MPI_Send of %ld bytes to %d returned an "
            "error(%s)\n",
-           sf_world_rank, sizeof(msg), io_concentrator[ioc_start], estring);
+           WORLD_RANK(sf_context), sizeof(msg), io_concentrator[ioc_start], estring);
     fflush(stdout);
     return -1;
   } else
@@ -1030,7 +1027,7 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
                      WRITE_INDEP_ACK, sf_context->sf_data_comm, &ackrequest);
 
   if (status != MPI_SUCCESS) {
-    printf("[%d %s] MPI_Irecv failed\n", sf_world_rank, __func__);
+    printf("[%d %s] MPI_Irecv failed\n", WORLD_RANK(sf_context), __func__);
     fflush(stdout);
     return -1;
   }
@@ -1064,7 +1061,7 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
   sf_io_request->completion_func.io_args.context_id = context_id;
   sf_io_request->completion_func.io_args.offset = offset;
   sf_io_request->completion_func.io_args.elements = elements;
-  sf_io_request->completion_func.io_args.data = data;
+  sf_io_request->completion_func.io_args.data = cast_to_void(data);
   sf_io_request->completion_func.io_args.io_req = MPI_REQUEST_NULL;
   sf_io_request->completion_func.io_function = async_completion;
   sf_io_request->completion_func.pending = 0;
@@ -1112,11 +1109,11 @@ static int write__independent_async(int n_io_concentrators, hid_t context_id,
  * Return:     SUCCEED if no errors, FAIL otherwise.
  */
 herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count,
-                                   haddr_t addrs[], hsize_t sizes[],
-                                   void *bufs[] /* data_in */) {
+                                   haddr_t addrs[], size_t sizes[],
+                                   const void *bufs[] /* data_in */) {
   herr_t ret_value = SUCCEED;
   hssize_t status = 0, k = 0;
-  hid_t sf_context_id = fid_map_to_context(h5_fid);
+  hid_t sf_context_id = fid_map_to_context((uint64_t)h5_fid);
   subfiling_context_t *sf_context = NULL;
   io_req_t **sf_async_reqs = NULL;
   MPI_Request *active_reqs = NULL;
@@ -1128,10 +1125,10 @@ herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count,
   sf_context = get__subfiling_object(sf_context_id);
   assert(sf_context != NULL);
 
-  active_reqs = (MPI_Request *)calloc(count + 2, sizeof(MPI_Request));
+  active_reqs = (MPI_Request *)calloc((size_t)(count+2), sizeof(MPI_Request));
   assert(active_reqs);
 
-  sf_async_reqs = (io_req_t *)calloc(count, sizeof(io_req_t *));
+  sf_async_reqs = (io_req_t **)calloc((size_t)count, sizeof(void *));
   assert(sf_async_reqs);
 
   /*
@@ -1139,7 +1136,7 @@ herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count,
    * The extra should be enough for an integer plus a pointer.
    */
   mpi_reqs = (struct __mpi_req *)&active_reqs[count];
-  mpi_reqs->n_reqs = count;
+  mpi_reqs->n_reqs = (int)count;
   mpi_reqs->active_reqs = active_reqs;
 
   /* Each pass thru the following should queue an MPI write
@@ -1194,11 +1191,11 @@ errors:
  * and 'H5FD_mem_t types[]'. These are now removed.
  */
 herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[],
-                                  hsize_t sizes[],
+                                  size_t sizes[],
                                   void *bufs[] /* data_out */) {
   herr_t ret_value = SUCCEED;
   hssize_t status = 0, k = 0;
-  hid_t sf_context_id = fid_map_to_context(h5_fid);
+  hid_t sf_context_id = fid_map_to_context((uint64_t)h5_fid);
   subfiling_context_t *sf_context = NULL;
   io_req_t **sf_async_reqs = NULL;
   MPI_Request *active_reqs = NULL;
@@ -1210,10 +1207,10 @@ herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[],
   sf_context = get__subfiling_object(sf_context_id);
   assert(sf_context != NULL);
 
-  active_reqs = (MPI_Request *)calloc(count + 2, sizeof(MPI_Request));
+  active_reqs = (MPI_Request *)calloc((size_t)(count+2), sizeof(MPI_Request));
   assert(active_reqs);
 
-  sf_async_reqs = (io_req_t *)calloc(count, sizeof(io_req_t *));
+  sf_async_reqs = (io_req_t **)calloc((size_t)count, sizeof(void *));
   assert(sf_async_reqs);
 
   /*
@@ -1221,7 +1218,7 @@ herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count, haddr_t addrs[],
    * The extra should be enough for an integer plus a pointer.
    */
   mpi_reqs = (struct __mpi_req *)&active_reqs[count];
-  mpi_reqs->n_reqs = count;
+  mpi_reqs->n_reqs = (int)count;
   mpi_reqs->active_reqs = active_reqs;
 
   for (k = 0; k < count; k++) {
@@ -1263,7 +1260,7 @@ errors:
 }
 
 int sf_truncate(hid_t h5_fid, haddr_t H5_ATTR_PARALLEL_UNUSED addr) {
-  hid_t sf_context_id = fid_map_to_context(h5_fid);
+  hid_t sf_context_id = fid_map_to_context((uint64_t)h5_fid);
   subfiling_context_t *sf_context = get__subfiling_object(sf_context_id);
 
   assert(sf_context != NULL);
@@ -1271,7 +1268,7 @@ int sf_truncate(hid_t h5_fid, haddr_t H5_ATTR_PARALLEL_UNUSED addr) {
 }
 
 int sf_shutdown_local_ioc(hid_t fid) {
-  hid_t context_id = fid_map_to_context(fid);
+  hid_t context_id = fid_map_to_context((uint64_t)fid);
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
   assert(sf_context != NULL);
   if (sf_context->topology->rank_is_ioc) {
@@ -1343,7 +1340,6 @@ int sf_shutdown_local_ioc(hid_t fid) {
  *-------------------------------------------------------------------------
  */
 int ioc_main(int64_t context_id) {
-  int sf_world_rank, sf_world_size;
   int subfile_rank;
   int flag, ret;
   int max_work_depth;
@@ -1363,15 +1359,13 @@ int ioc_main(int64_t context_id) {
    */
 
   subfile_rank = context->sf_group_rank;
-  sf_world_size = context->topology->app_layout->world_size;
-  sf_world_rank = context->topology->app_layout->world_rank;
 
   if (request_count_per_rank == NULL) {
-    request_count_per_rank = (int *)calloc((size_t)sf_world_size, sizeof(int));
+	  request_count_per_rank = (int *)calloc((size_t)WORLD_SIZE(context), sizeof(int));
     assert(request_count_per_rank != NULL);
   }
 
-  max_work_depth = MAX(8, sf_world_size * MAX_WORK_PER_RANK);
+  max_work_depth = MAX(8, WORLD_SIZE(context) * MAX_WORK_PER_RANK);
   incoming_requests = (sf_work_request_t *)calloc((size_t)(max_work_depth + 1),
                                                   sizeof(sf_work_request_t));
 
@@ -1394,7 +1388,7 @@ int ioc_main(int64_t context_id) {
     if ((ret == MPI_SUCCESS) && (flag != 0)) {
       sf_work_request_t *msg = NULL;
       int count;
-      int index;
+      int index = 0;
       int request_size = (int)sizeof(sf_work_request_t);
       int source = status.MPI_SOURCE;
       int tag = status.MPI_TAG;
@@ -1421,7 +1415,7 @@ int ioc_main(int64_t context_id) {
       queue_start_time = MPI_Wtime();
       if (ret == MPI_SUCCESS) {
         if (msg) {
-          printf("%s: non-std msg=(%p) from %d\n", __func__, msg, source);
+          printf("%s: non-std msg=(%p) from %d\n", __func__, (void *)msg, source);
           fflush(stdout);
 
           msg->source = source;
@@ -1688,10 +1682,15 @@ int queue_read_indep(sf_work_request_t *msg, int subfile_rank, int source,
   }
 
   if (sf_read_data(fd, file_offset, send_buffer, data_size, subfile_rank) < 0) {
-    printf("[%d] %s - sf_read_data for source(%d) returned an error! "
-           "read_count=%ld\n",
-           subfile_rank, __func__, source, sf_context->sf_read_count);
+    printf("[%d] %s - sf_read_data fd=%d for source(%d) returned an error!\n",
+           subfile_rank, __func__, fd, source );
     fflush(stdout);
+    /* 
+     * Should send a zero(0) byte message to the client to prevent
+     * it from hanging...
+     */
+    MPI_Send(send_buffer, 0, MPI_BYTE, source, READ_INDEP_DATA, comm);
+    free(send_buffer);
     return -1;
   }
 
@@ -1727,6 +1726,59 @@ int queue_read_indep(sf_work_request_t *msg, int subfile_rank, int source,
   return 0;
 } /* end queue_read_indep() */
 
+/* ---------------------------------------------------
+ * Helper function for subfiling_open_file() see below
+ * ---------------------------------------------------*/
+static
+void get__subfile_name(subfiling_context_t *sf_context, int64_t h5_file_id, int subfile_rank,
+                       char **_prefix, char **_subfile_dir, char *filepath)
+{
+  const char slash = '/'; 
+  char workdir[PATH_MAX];
+  char configdir[PATH_MAX];
+
+  char *prefix = NULL, *subfile_dir = NULL;
+  int n_io_concentrators = sf_context->topology->n_io_concentrators;
+
+  memset(workdir, 0, sizeof(workdir));
+  getcwd(workdir, sizeof(workdir));
+  if ((prefix = sf_context->subfile_prefix) == NULL) {
+     strncpy(configdir, sf_context->filename, strlen(sf_context->filename));
+     prefix = dirname(configdir);
+  }
+
+  size_t prefix_len = strlen(prefix);
+  if (strcmp(prefix, workdir)) {
+     mkdir(prefix, S_IRWXU);
+     if (prefix[prefix_len-1] == slash) {
+       if (sf_context->subfile_prefix)
+          sprintf(filepath, "%s" SF_NODE_LOCAL_TEMPLATE, prefix, h5_file_id,
+                  subfile_rank, n_io_concentrators);
+       else
+          sprintf(filepath, "%s" SF_FILENAME_TEMPLATE, prefix, h5_file_id,
+                  subfile_rank, n_io_concentrators);
+     }
+     else {
+       if (sf_context->subfile_prefix)
+          sprintf(filepath, "%s/" SF_NODE_LOCAL_TEMPLATE, prefix, h5_file_id,
+                  subfile_rank, n_io_concentrators);
+       else
+          sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, prefix, h5_file_id,
+                  subfile_rank, n_io_concentrators);
+        }
+  } else {
+    memset(filepath, 0, PATH_MAX);
+    memset(configdir, 0, PATH_MAX);
+    strcpy(configdir, sf_context->filename);
+    subfile_dir = dirname(configdir);
+    sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, subfile_dir, h5_file_id,
+            subfile_rank, n_io_concentrators);
+  }
+
+  *_prefix = prefix;
+  *_subfile_dir = subfile_dir;
+}
+	
 /*-------------------------------------------------------------------------
  * Function:    Public/IOC subfiling_open_file
  *
@@ -1755,11 +1807,10 @@ int queue_read_indep(sf_work_request_t *msg, int subfile_rank, int source,
  */
 int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
   int errors = 0;
-  int subfile_fid = -1;
   char filepath[PATH_MAX];
-
   char *prefix = NULL;
   char *subfile_dir = NULL;
+  mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
   double t_start = 0.0, t_end = 0.0;
   /* Only the real IOCs open the subfiles
@@ -1777,26 +1828,22 @@ int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
     assert(sf_context != NULL);
 
     begin_thread_exclusive();
-    /* Check to see whether we need to create the subfile(s) */
-    if (sf_context->sf_fid < 0) {
+    /* Check to see whether we need to create the subfile
+     * and possibly (IFF our subfile_rank is 0) a config file.
+     */
+
+    get__subfile_name(sf_context, h5_file_id, subfile_rank, &prefix, &subfile_dir, filepath);
+
+    if (sf_context->sf_fid == -2) {
+      const char *dotconfig = ".subfile_config";
       int n_io_concentrators = sf_context->topology->n_io_concentrators;
       int *io_concentrator = sf_context->topology->io_concentrator;
-      const char *dotconfig = ".subfile_config";
-      mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 
-      if ((prefix = sf_context->subfile_prefix)) {
-        mkdir(prefix, S_IRWXU);
-        sprintf(filepath, "%s/" SF_FILENAME_TEMPLATE, prefix, h5_file_id,
-                subfile_rank, n_io_concentrators);
-      } else {
-        strcpy(filepath, sf_context->filename);
-        subfile_dir = strrchr(filepath, '/');
-        assert(subfile_dir);
-        sprintf(subfile_dir + 1, SF_FILENAME_TEMPLATE, h5_file_id, subfile_rank,
-                n_io_concentrators);
-      }
       if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
         end_thread_exclusive();
+        HDprintf("[%d %s] file create(%s) failed!\n", subfile_rank, __func__,
+                filepath);
+        HDfflush(stdout);
 
 #ifndef NDEBUG
         if (sf_verbose_flag) {
@@ -1809,9 +1856,12 @@ int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
         goto done;
       }
 
+	  memset(filepath, 0, sizeof(filepath));
       strcpy(filepath, sf_context->filename);
       subfile_dir = strrchr(filepath, '/');
       if (subfile_dir) {
+        size_t remaining = strlen(subfile_dir);
+		memset(subfile_dir, 0, remaining);
         sprintf(subfile_dir, "/%ld%s", h5_file_id, dotconfig);
         strcpy(config, filepath);
       }
@@ -1831,11 +1881,11 @@ int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
           int k;
           char linebuf[PATH_MAX];
           sprintf(linebuf, "stripe_size=%ld\n", sf_context->sf_stripe_size);
-          fwrite(linebuf, strlen(linebuf), 1, f);
+          HDfwrite(linebuf, strlen(linebuf), 1, f);
           sprintf(linebuf, "aggregator_count=%d\n", n_io_concentrators);
-          fwrite(linebuf, strlen(linebuf), 1, f);
+          HDfwrite(linebuf, strlen(linebuf), 1, f);
           sprintf(linebuf, "hdf5_file=%s\n", sf_context->filename);
-          fwrite(linebuf, strlen(linebuf), 1, f);
+          HDfwrite(linebuf, strlen(linebuf), 1, f);
 
           for (k = 0; k < n_io_concentrators; k++) {
             if (prefix)
@@ -1846,7 +1896,7 @@ int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
               sprintf(linebuf, "%ld_node_local_temp_%d_of_%d:%d\n", h5_file_id,
                       subfile_rank, n_io_concentrators, io_concentrator[k]);
 
-            fwrite(linebuf, strlen(linebuf), 1, f);
+            HDfwrite(linebuf, strlen(linebuf), 1, f);
           }
 
           fclose(f);
@@ -1859,14 +1909,33 @@ int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags) {
 #ifndef NDEBUG
       if (sf_verbose_flag) {
         if (sf_logfile) {
-          fprintf(sf_logfile, "[ioc:%d] Opened subfile %s\n", subfile_rank,
+          HDfprintf(sf_logfile, "[ioc:%d] Opened subfile %s\n", subfile_rank,
                   filepath);
         }
       }
 #endif
     }
+	else {
+      if ((sf_context->sf_fid = open(filepath, flags, mode)) < 0) {
+        end_thread_exclusive();
+        HDprintf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__,
+                filepath);
+        HDfflush(stdout);
+
+#ifndef NDEBUG
+        if (sf_verbose_flag) {
+          HDprintf("[%d %s] file open(%s) failed!\n", subfile_rank, __func__,
+                 filepath);
+          HDfflush(stdout);
+        }
+#endif
+        errors++;
+        goto done;
+      }
+	}
     end_thread_exclusive();
   }
+
 done:
   t_end = MPI_Wtime();
 
@@ -1910,7 +1979,7 @@ done:
  */
 
 int sf_get_mpi_rank(hid_t fid, int *rank) {
-  hid_t context_id = fid_map_to_context(fid);
+  hid_t context_id = fid_map_to_context((uint64_t)fid);
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
   assert(sf_context != NULL);
   assert(rank != NULL);
@@ -1919,7 +1988,7 @@ int sf_get_mpi_rank(hid_t fid, int *rank) {
 }
 
 int sf_get_mpi_size(hid_t fid, int *size) {
-  hid_t context_id = fid_map_to_context(fid);
+  hid_t context_id = fid_map_to_context((uint64_t)fid);
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
   assert(sf_context != NULL);
   assert(size != NULL);
@@ -1928,7 +1997,7 @@ int sf_get_mpi_size(hid_t fid, int *size) {
 }
 
 int sf_get_group_comm(hid_t fid, MPI_Comm *comm) {
-  hid_t context_id = fid_map_to_context(fid);
+  hid_t context_id = fid_map_to_context((uint64_t)fid);
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
   assert(sf_context != NULL);
   assert(comm != NULL);
@@ -1939,7 +2008,7 @@ int sf_get_group_comm(hid_t fid, MPI_Comm *comm) {
 int sf_subfile_set_logging(hid_t sf_fid, int ioc_rank, int flag) {
   int ioc;
   int status = 0;
-  hid_t context_id = fid_map_to_context(sf_fid);
+  hid_t context_id = fid_map_to_context((uint64_t)sf_fid);
   subfiling_context_t *sf_context = get__subfiling_object(context_id);
   int n_io_concentrators;
   int *io_concentrator = NULL;

@@ -11,7 +11,7 @@
  * help@hdfgroup.org.                                                        *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#include "H5FDsubfiling_priv.h"
+#include "H5FDsubfiling.h"
 #include "mercury_thread.h"
 #include "mercury_thread_mutex.h"
 #include "mercury_thread_pool.h"
@@ -175,8 +175,8 @@ int initialize_ioc_threads(void *_sf_context) {
   t_end = MPI_Wtime();
   if (sf_verbose_flag) {
     if (sf_context->topology->subfile_rank == 0) {
-      printf("%s: time = %lf seconds\n", __func__, (t_end - t_start));
-      fflush(stdout);
+      HDprintf("%s: time = %lf seconds\n", __func__, (t_end - t_start));
+      HDfflush(stdout);
     }
   }
 #endif
@@ -209,6 +209,24 @@ void __attribute__((destructor)) finalize_ioc_threads(void) {
   }
 }
 
+static const char *translate_opcode(io_op_t op)
+{
+	switch(op) {
+	case READ_OP: return "READ_OP";
+		break;
+	case WRITE_OP: return "WRITE_OP";
+		break;
+	case OPEN_OP: return "OPEN_OP";
+        break;
+    case CLOSE_OP: return "CLOSE_OP";
+        break;
+    case FINI_OP: return "FINI_OP";
+        break;
+    case LOGGING_OP: return "LOGGING_OP";
+        break;
+	}
+	return "unknown";
+}
 /*-------------------------------------------------------------------------
  * Function:    local: handle_work_request
  *
@@ -253,7 +271,7 @@ static HG_THREAD_RETURN_TYPE handle_work_request(void *arg)
                               sf_context->sf_data_comm);
     break;
   default:
-    printf("[ioc(%d)] received message tag(%x)from rank %d\n",
+    HDprintf("[ioc(%d)] received message tag(%x)from rank %d\n",
            msg->subfile_rank, msg->tag, msg->source);
     status = -1;
     break;
@@ -262,9 +280,11 @@ static HG_THREAD_RETURN_TYPE handle_work_request(void *arg)
 
   atomic_fetch_sub(&sf_work_pending, 1); // atomic
   if (status < 0) {
-    printf("[ioc(%d) %s]: Error encounted processing request(%x) from "
-           "rank(%d)\n",
-           msg->subfile_rank, __func__, msg->tag, msg->source);
+    HDprintf("[ioc(%d) %s]: request(%s) filename=%s from "
+           "rank(%d), size=%ld, offset=%ld FAILED\n",
+           msg->subfile_rank, __func__, translate_opcode((io_op_t)msg->tag),
+		   sf_context->filename, msg->source, msg->header[0], msg->header[1]);
+
     fflush(stdout);
   }
   return ret;
@@ -286,8 +306,10 @@ static HG_THREAD_RETURN_TYPE handle_work_request(void *arg)
  *
  *-------------------------------------------------------------------------
  */
-int tpool_add_work(sf_work_request_t *work) {
+int tpool_add_work(void *_work) {
   static int work_index = 0;
+  sf_work_request_t *work = (sf_work_request_t *)_work;
+
   hg_thread_mutex_lock(&ioc_mutex);
   if (work_index == pool_concurrent_max)
     work_index = 0;
@@ -329,8 +351,8 @@ bool tpool_is_empty(void) { return HG_QUEUE_IS_EMPTY(&ioc_thread_pool->queue); }
  *
  *-------------------------------------------------------------------------
  */
-int begin_thread_exclusive(void) {
-  return hg_thread_mutex_lock(&ioc_thread_mutex);
+void begin_thread_exclusive(void) {
+  hg_thread_mutex_lock(&ioc_thread_mutex);
 }
 
 /*-------------------------------------------------------------------------
@@ -348,8 +370,8 @@ int begin_thread_exclusive(void) {
  *
  *-------------------------------------------------------------------------
  */
-int end_thread_exclusive(void) {
-  return hg_thread_mutex_unlock(&ioc_thread_mutex);
+void end_thread_exclusive(void) {
+  hg_thread_mutex_unlock(&ioc_thread_mutex);
 }
 
 /*-------------------------------------------------------------------------

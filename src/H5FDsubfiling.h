@@ -171,20 +171,21 @@ H5_DLL herr_t H5FD__dataset_read_contiguous(
 
 H5_DLL char *get_ioc_selection_criteria(ioc_selection_t *);
 H5_DLL void *get__subfiling_object(int64_t object_id);
-H5_DLL hid_t fid_map_to_context(hid_t h5_fid);
+H5_DLL hid_t fid_map_to_context(uint64_t h5_fid);
 
 /* return arguments are vector of vectors - function return is the length
  * (depth) of the sub vectors. Note that we don't need to include the
  * MPI_Datatype return argument!
  */
+H5_DLL int subfiling_open_file(sf_work_request_t *msg, int subfile_rank, int flags);
+
 H5_DLL int init__indep_io(void *_sf_context, size_t depth, int ioc_total,
                           int64_t *sf_source_data_offset, int64_t *sf_datasize,
                           int64_t *f_offset, int *first_index, int *n_containers,
 						  int64_t offset, int64_t elements,
                           int dtype_extent);
 
-H5_DLL int H5FD__open_subfiles(void *_config_info, int64_t inode_id, int fd,
-                               int flags);
+H5_DLL int H5FD__open_subfiles(void *_config_info, uint64_t inode_id, int flags);
 H5_DLL int H5FD__close_subfiles(hid_t context_id);
 H5_DLL int H5FD__read_independent(hid_t H5FD__fid, int64_t offset,
                                   int64_t elements, int dtype_extent,
@@ -200,6 +201,24 @@ H5_DLL int H5FD__truncate(hid_t h5_fid, haddr_t addr);
 H5_DLL int H5FD__shutdown_local_ioc(hid_t fid);
 H5_DLL void manage_client_logfile(int client_rank, int flag_value);
 H5_DLL int initialize_ioc_threads(void *sf_context);
+H5_DLL herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count,
+                                          haddr_t addrs[], size_t sizes[],
+                                          const void *bufs[] /* data_in */);
+
+H5_DLL herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count,
+                                         haddr_t addrs[], size_t sizes[],
+                                         void *bufs[] /* data_out */);
+H5_DLL int queue_write_indep(sf_work_request_t *msg, int subfile_rank,
+                             int source, MPI_Comm comm);
+
+H5_DLL int queue_read_indep(sf_work_request_t *msg, int subfile_rank,
+                            int source, MPI_Comm comm);
+
+H5_DLL int sf_read_data(int fd, int64_t file_offset, void *data_buffer,
+                        int64_t data_size, int subfile_rank);
+
+H5_DLL int sf_write_data(int fd, int64_t file_offset, void *data_buffer,
+                         int64_t data_size, int subfile_rank);
 
 #ifdef __cplusplus
 }

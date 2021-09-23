@@ -47,7 +47,7 @@ sf_context_entries -- The number of contexts that are currently recorded.
 sf_context_cache   -- Storage for contexts
 --------------------------------------------------------------------------
 */
-static size_t                 twoGIG_LIMIT = (1 << 30);
+// static size_t                 twoGIG_LIMIT = (1 << 30);
 static size_t                 sf_context_limit  = 16;
 static subfiling_context_t   *sf_context_cache  = NULL;
 static size_t                 sf_topology_limit = 4;
@@ -79,6 +79,7 @@ maybe_initialize_statistics(void)
 	memset(subfiling_stats, 0, sizeof(subfiling_stats));
 }
 
+static void clear_fid_map_entry(uint64_t sf_fid);
 
 /*
 =========================================
@@ -280,7 +281,7 @@ set_verbose_flag(int subfile_rank, int new_value)
  *-------------------------------------------------------------------------
  */
 static herr_t
-record_fid_to_subfile(hid_t fid, hid_t subfile_context_id, int *next_index)
+record_fid_to_subfile(uint64_t fid, hid_t subfile_context_id, int *next_index)
 {
     herr_t status = SUCCEED;
     int    index;
@@ -289,18 +290,20 @@ record_fid_to_subfile(hid_t fid, hid_t subfile_context_id, int *next_index)
         sf_open_file_map = (file_map_to_context_t *) malloc(
             (size_t) DEFAULT_MAP_ENTRIES * sizeof(file_map_to_context_t));
         if (sf_open_file_map == NULL) {
-            perror("calloc");
+            perror("malloc");
             return FAIL;
         }
         sf_file_map_size = DEFAULT_MAP_ENTRIES;
         for (i = 0; i < sf_file_map_size; i++) {
-            sf_open_file_map[i].h5_file_id = H5I_INVALID_HID;
+            sf_open_file_map[i].h5_file_id = (uint64_t)H5I_INVALID_HID;
+            sf_open_file_map[i].sf_context_id = 0;
         }
     }
     for (index = 0; index < sf_file_map_size; index++) {
-        if (sf_open_file_map[index].h5_file_id == H5I_INVALID_HID) {
+        if (sf_open_file_map[index].h5_file_id == (uint64_t)H5I_INVALID_HID) {
             sf_open_file_map[index].h5_file_id = fid;
             sf_open_file_map[index].sf_context_id = subfile_context_id;
+
             if (next_index) {
                 *next_index = index;
             }
@@ -317,7 +320,7 @@ record_fid_to_subfile(hid_t fid, hid_t subfile_context_id, int *next_index)
         }
         sf_file_map_size *= 2;
         for (i = index; i < sf_file_map_size; i++) {
-            sf_open_file_map[i].h5_file_id = H5I_INVALID_HID;
+            sf_open_file_map[i].h5_file_id = (uint64_t)H5I_INVALID_HID;
         }
 
         if (next_index) {
@@ -365,13 +368,19 @@ record_fid_to_subfile(hid_t fid, hid_t subfile_context_id, int *next_index)
  *-------------------------------------------------------------------------
  */
 int
-open_subfile_with_context(subfiling_context_t *sf_context, hid_t fid, int fd, int flags)
+open_subfile_with_context(subfiling_context_t *sf_context, uint64_t fid, int flags)
 {
     int ret;
     int g_errors = 0;
     int l_errors = 0;
     double start_t = MPI_Wtime();
     assert(sf_context != NULL);
+
+#ifdef VERBOSE
+    printf("[%s %d]: context_id=%ld\n", __func__,
+		   sf_context->topology->app_layout->world_rank,
+		   sf_context->sf_context_id);
+#endif
 
     /*
      * Save the HDF5 file id (fid) to subfile context mapping.
@@ -387,14 +396,13 @@ open_subfile_with_context(subfiling_context_t *sf_context, hid_t fid, int fd, in
     }
 
     if (sf_context->topology->rank_is_ioc) {
-        sf_work_request_t msg = {{flags,fid, sf_context->sf_context_id},
+        sf_work_request_t msg = {{flags,(int64_t)fid, sf_context->sf_context_id},
                                  OPEN_OP, sf_context->topology->app_layout->world_rank,
                                  sf_context->topology->subfile_rank,
-                                 sf_context->sf_context_id, start_t};
+                                 sf_context->sf_context_id, start_t, NULL, 0};
 
         if (flags & O_CREAT) {
-            
-            sf_context->sf_fid = -1;
+             sf_context->sf_fid = -2;
         }
 
         l_errors = subfiling_open_file(&msg, sf_context->topology->subfile_rank, flags);
@@ -404,7 +412,8 @@ open_subfile_with_context(subfiling_context_t *sf_context, hid_t fid, int fd, in
 
     MPI_Allreduce(&l_errors, &g_errors, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     if (g_errors) {
-        printf("[%s %d]: error count = %d\n", __func__, sf_context->topology->app_layout->world_rank, g_errors);
+        printf("[%s %d]: error count = %d l_errors=%d\n", __func__,
+               sf_context->topology->app_layout->world_rank, g_errors, l_errors);
         fflush(stdout);
     }
     return g_errors;
@@ -436,12 +445,13 @@ open_subfile_with_context(subfiling_context_t *sf_context, hid_t fid, int fd, in
  *-------------------------------------------------------------------------
  */
 static int
-close__subfiles( subfiling_context_t *sf_context, hid_t fid)
+close__subfiles( subfiling_context_t *sf_context, uint64_t fid)
 {
     int         global_errors = 0, errors = 0;
     int         file_open_count;
     int         subfile_fid = 0;
-    double      t0, t1, t2, t_main_exit, t_finalize_threads;
+    double      t0 = 0.0, t1 = 0.0, t2 = 0.0;
+    double      t_main_exit = 0.0, t_finalize_threads = 0.0;
 
     HDassert((sf_context != NULL));
 
@@ -501,8 +511,9 @@ close__subfiles( subfiling_context_t *sf_context, hid_t fid)
            t_main_exit = t2-t1;
            H5FD_ioc_finalize_threads();
            t2 = MPI_Wtime();
-           t_finalize_threads = t2-t1;
         }
+
+        t_finalize_threads = t2-t1;
 
         if ((subfile_fid = sf_context->sf_fid) > 0) {
             if (HDclose(subfile_fid) < 0)
@@ -535,6 +546,14 @@ close__subfiles( subfiling_context_t *sf_context, hid_t fid)
               sf_logfile = NULL;
             }
         }
+        if (sf_context->filename) {
+           free(sf_context->filename);
+           sf_context->filename = NULL;
+        }
+        if (sf_context->subfile_prefix) {
+           free(sf_context->subfile_prefix);
+           sf_context->subfile_prefix = NULL;
+        }
 #endif
     }
 
@@ -565,6 +584,7 @@ sf_read_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
 {
     int     ret = 0;
 	int     retries = MIN_RETRIES;
+    useconds_t delay = 100;
     ssize_t bytes_read;
     ssize_t bytes_remaining = (ssize_t) data_size;
     char *  this_buffer = data_buffer;
@@ -574,15 +594,17 @@ sf_read_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
                  fd, this_buffer, (size_t) bytes_remaining, file_offset)) < 0) {
 
             perror("pread failed!");
-            printf("[ioc(%d) %s] pread(fd, buf, bytes_remaining=%ld, "
+            HDprintf("[ioc(%d) %s] pread(fd, buf, bytes_remaining=%ld, "
                    "file_offset =%ld)\n",
                 subfile_rank, __func__, bytes_remaining, file_offset);
-            fflush(stdout);
+            HDfflush(stdout);
             return -1;
         } else if (bytes_read > 0) {
+            /* reset retry params */
 			retries = MIN_RETRIES;
+            delay = 100;
             bytes_remaining -= bytes_read;
-#if 0
+#ifdef VERBOSE
             printf("[ioc(%d) %s]: read %ld bytes, remaining=%ld, file_offset=%ld\n",subfile_rank,
                    __func__, bytes_read, bytes_remaining, file_offset);
             fflush(stdout);
@@ -592,8 +614,8 @@ sf_read_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
 
         } else {
 			if (retries == 0) {
-#if 0
-                printf("[ioc(%d) %s] file_offset=%ld, data_size=%ld\n",
+#ifdef VERBOSE
+                printf("[ioc(%d) %s] TIMEOUT: file_offset=%ld, data_size=%ld\n",
 					   subfile_rank, __func__, file_offset, data_size);
                 printf("[ioc(%d) %s] ERROR! read of 0 bytes == eof!\n",
                        subfile_rank, __func__);
@@ -603,7 +625,8 @@ sf_read_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
                 return -2;
             }
 			retries--;
-			usleep(100);
+			usleep(delay);
+			delay *= 2;
         }
     }
     return ret;
@@ -620,15 +643,17 @@ sf_write_data(int fd, int64_t file_offset, void *data_buffer, int64_t data_size,
     while (bytes_remaining) {
         if ((written = pwrite(
                  fd, this_data, (size_t) bytes_remaining, file_offset)) < 0) {
+            struct stat statbuf;
             perror("pwrite failed!");
-            printf("[ioc(%d) %s] pwrite(fd, data, bytes_remaining=%ld, "
-                   "file_offset =%ld)\n",
-                subfile_rank, __func__, bytes_remaining, file_offset);
-            fflush(stdout);
+            fstat(fd, &statbuf);
+            HDprintf("[ioc(%d) %s] pwrite(fd, data, bytes_remaining=%ld, "
+                   "file_offset=%ld), fd=%d, st_size=%ld\n",
+                   subfile_rank, __func__, bytes_remaining, file_offset, fd, statbuf.st_size);
+            HDfflush(stdout);
             return -1;
         } else {
             bytes_remaining -= written;
-#if 0
+#ifdef VERBOSE
             printf("[ioc(%d) %s]: wrote %ld bytes, remaining=%ld, file_offset=%ld\n",subfile_rank,
                    __func__, written, bytes_remaining, file_offset);
             fflush(stdout);
@@ -913,7 +938,7 @@ assign_ioc_ranks(int *io_concentrator, int ioc_count, int rank_multiple, sf_topo
  *-------------------------------------------------------------------------
  */
 hid_t
-fid_map_to_context(hid_t sf_fid)
+fid_map_to_context(uint64_t sf_fid)
 {
     if (sf_open_file_map) {
         int i;
@@ -944,15 +969,15 @@ fid_map_to_context(hid_t sf_fid)
  *
  *-------------------------------------------------------------------------
  */
-void
-clear_fid_map_entry(hid_t sf_fid)
+static void
+clear_fid_map_entry(uint64_t sf_fid)
 {
     if (sf_open_file_map) {
         int i;
         for (i = 0; i < sf_file_map_size; i++) {
             if (sf_open_file_map[i].h5_file_id == sf_fid) {
-                sf_open_file_map[i].h5_file_id = H5I_INVALID_HID;
-                sf_open_file_map[i].sf_context_id = H5I_INVALID_HID;
+                sf_open_file_map[i].h5_file_id = (uint64_t)H5I_INVALID_HID;
+                sf_open_file_map[i].sf_context_id = 0;
                 return;
             }
         }
@@ -980,7 +1005,7 @@ active_map_entries(void)
 {
     int i, map_entries = 0;
     for (i = 0; i < sf_file_map_size; i++) {
-        if (sf_open_file_map[i].h5_file_id != H5I_INVALID_HID) {
+        if (sf_open_file_map[i].h5_file_id != (uint64_t)H5I_INVALID_HID) {
             map_entries++;
         }
     }
@@ -1404,14 +1429,14 @@ done:
  *-------------------------------------------------------------------------
  */
 int
-H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int fd, int flags)
+H5FD__open_subfiles(void *_config_info, uint64_t h5_file_id, int flags)
 {
     int                  status;
     int64_t              context_id = -1;
     subfiling_context_t *sf_context = NULL;
     ioc_selection_t      ioc_selection;
-    char filepath[PATH_MAX];
-    char *slash;
+    // char filepath[PATH_MAX];
+    // char *slash;
     config_common_t *config_info = _config_info;
     char *option_arg = get_ioc_selection_criteria(&ioc_selection);
 
@@ -1445,20 +1470,10 @@ H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int fd, int flags)
 
     /* Save some basic things in the new context */
     config_info->context_id = context_id;
+    sf_context->sf_fid = 0;
     sf_context->sf_context_id = context_id;
     sf_context->h5_file_id = h5_file_id;
-    slash = strchr(config_info->file_path,'/');
-    if (slash)
-        sf_context->filename = strdup(config_info->file_path);
-    else {
-        char filename[PATH_MAX];
-        char path[PATH_MAX];
-        char sep = '/';
-        HDgetcwd(path, sizeof(path));
-        HDsnprintf(filename, sizeof(path), "%s%c%s", path, sep, config_info->file_path);
-        HDsnprintf(filepath, sizeof(filepath), "%s%c%s", config_info->file_dir, sep, filename);
-        sf_context->filename = strdup(filepath);
-    }
+    sf_context->filename = strdup(config_info->file_path);
 
     /* Ensure that the IOC service won't exit
      * as we prepare to start up..
@@ -1469,7 +1484,7 @@ H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int fd, int flags)
      * start the service threads on the identified
      * ranks as part of the subfile opening.
      */
-    return open_subfile_with_context(sf_context, h5_file_id, fd, flags);
+    return open_subfile_with_context(sf_context, h5_file_id, flags);
 }
 
 /*-------------------------------------------------------------------------

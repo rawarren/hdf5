@@ -113,14 +113,13 @@ typedef struct H5FD_ioc_t {
 
 /* Public functions which are referenced but not found in this file */
 extern herr_t H5FD__write_vector_internal(hid_t h5_fid, hssize_t count,
-                                          haddr_t addrs[], hsize_t sizes[],
-                                          void *bufs[] /* data_in */);
+                                          haddr_t addrs[], size_t sizes[],
+                                          const void *bufs[] /* data_in */);
 extern herr_t H5FD__read_vector_internal(hid_t h5_fid, hssize_t count,
-                                         haddr_t addrs[], hsize_t sizes[],
+                                         haddr_t addrs[], size_t sizes[],
                                          void *bufs[] /* data_out */);
 extern int H5FD__close_subfiles(int64_t context_id);
-extern int H5FD__open_subfiles(void *_config_info, int64_t h5_file_id, int fd,
-                               int flags);
+extern int H5FD__open_subfiles(void *_config_info, uint64_t h5_file_id, int flags);
 extern hid_t fid_map_to_context(hid_t sf_fid);
 extern subfiling_context_t *get__subfiling_object(int64_t context_id);
 
@@ -169,8 +168,10 @@ static herr_t H5FD__ioc_flush(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_truncate(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
 static herr_t H5FD__ioc_lock(H5FD_t *_file, hbool_t rw);
 static herr_t H5FD__ioc_unlock(H5FD_t *_file);
+/*
 static herr_t H5FD__ioc_ctl(H5FD_t *file, uint64_t op_code, uint64_t flags,
                             const void *input, void **result);
+*/
 
 static const H5FD_class_t H5FD_ioc_g = {
     "ioc",                     /* name                 */
@@ -532,8 +533,8 @@ done:
  * Return:      SUCCEED/FAIL
  *-------------------------------------------------------------------------
  */
-static herr_t H5FD__ioc_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id,
-                              haddr_t addr, size_t size, const void *buf) {
+static herr_t H5FD__ioc_write(H5FD_t *_file, H5FD_mem_t H5_ATTR_UNUSED type,
+              hid_t dxpl_id, haddr_t addr, size_t size, const void *buf) {
   H5FD_ioc_t *file_ptr = (H5FD_ioc_t *)_file;
   H5P_genplist_t *plist_ptr = NULL;
   herr_t ret_value = SUCCEED;
@@ -544,6 +545,7 @@ static herr_t H5FD__ioc_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id,
   if (NULL == (plist_ptr = (H5P_genplist_t *)H5I_object(dxpl_id)))
     HGOTO_ERROR(H5E_ARGS, H5E_BADTYPE, FAIL, "not a property list")
 
+  addr += _file->base_addr;
   h5_fid = (hid_t)file_ptr->inode;
   ret_value = H5FD__write_vector_internal(h5_fid, 1, &addr, &size, &buf);
 
@@ -556,7 +558,6 @@ static herr_t H5FD__ioc_read_vector(H5FD_t *_file, hid_t dxpl_id,
                                     haddr_t addrs[], size_t sizes[],
                                     void *bufs[] /* out */) {
   H5FD_ioc_t *file_ptr = (H5FD_ioc_t *)_file;
-  hbool_t err_occured = FALSE;
   herr_t ret_value = SUCCEED; /* Return value */
   hid_t h5_fid;
 
@@ -604,7 +605,6 @@ static herr_t H5FD__ioc_write_vector(H5FD_t *_file, hid_t dxpl_id,
                                      haddr_t addrs[], size_t sizes[],
                                      const void *bufs[] /* in */) {
   H5FD_ioc_t *file = (H5FD_ioc_t *)_file;
-  hbool_t err_occured = FALSE;
   herr_t ret_value = SUCCEED; /* Return value */
   hid_t h5_fid;
 
@@ -789,14 +789,17 @@ static H5FD_t *H5FD__ioc_open(const char *name, unsigned flags,
     int mpi_provides = 0;
     MPI_Query_thread(&mpi_provides);
     if (mpi_provides != MPI_THREAD_MULTIPLE) {
-      HMPI_GOTO_ERROR(FAIL, "Subfiling requires the use of MPI_THREAD_MULTIPLE",
-                      -1);
+      HGOTO_ERROR(H5E_VFL, H5E_BADVALUE, NULL, "Subfiling requires the use of MPI_THREAD_MULTIPLE")
     }
   }
 
   file_ptr = (H5FD_ioc_t *)H5FL_CALLOC(H5FD_ioc_t);
   if (NULL == file_ptr)
     HGOTO_ERROR(H5E_VFL, H5E_CANTALLOC, NULL, "unable to allocate file struct")
+
+    /* Get some basic MPI information */
+  MPI_Comm_size(MPI_COMM_WORLD, &file_ptr->mpi_size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &file_ptr->mpi_rank);
 
   /* Get the driver-specific file access properties */
   plist_ptr = (H5P_genplist_t *)H5I_object(ioc_fapl_id);
@@ -811,9 +814,12 @@ static H5FD_t *H5FD__ioc_open(const char *name, unsigned flags,
   memcpy(&file_ptr->fa, fapl_ptr, sizeof(H5FD_ioc_config_t));
 
   /* Extend the config info with file_path and file_dir */
-  if (HDrealpath(name, file_ptr->fa.common.file_path) != NULL)
-    HDstrcpy(file_ptr->fa.common.file_dir,
-             dirname(file_ptr->fa.common.file_path));
+  if (HDrealpath(name, file_ptr->fa.common.file_path) != NULL) {
+    char *path = HDstrdup(file_ptr->fa.common.file_path);
+    char *directory = dirname(path);
+    HDstrcpy(file_ptr->fa.common.file_dir, directory);
+    HDfree(path);
+  }
 
   /* Copy the ioc FAPL. */
   if (H5FD__copy_plist(fapl_ptr->common.ioc_fapl_id,
@@ -831,7 +837,6 @@ static H5FD_t *H5FD__ioc_open(const char *name, unsigned flags,
 
   if (strncmp(driver->name, "sec2", 4) == 0) {
     uint64_t inode_id = (uint64_t)-1;
-    int mpi_rank, mpi_size;
     int ioc_flags = O_RDWR;
 
     /* Translate the HDF5 file open flags into standard POSIX open flags */
@@ -840,13 +845,9 @@ static H5FD_t *H5FD__ioc_open(const char *name, unsigned flags,
     if (flags & H5F_ACC_CREAT)
       ioc_flags |= O_CREAT;
 
-    /* Get some basic MPI information */
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-
     /* sec2 open the file */
-    file_ptr->ioc_file =
-        H5FD_open(name, flags, fapl_ptr->common.ioc_fapl_id, HADDR_UNDEF);
+    file_ptr->ioc_file = H5FD_open(file_ptr->fa.common.file_path, flags,
+                             fapl_ptr->common.ioc_fapl_id, HADDR_UNDEF);
     if (file_ptr->ioc_file) {
       h5_stat_t sb;
       H5FD_sec2_t *hdf_file = (H5FD_sec2_t *)file_ptr->ioc_file;
@@ -865,19 +866,20 @@ static H5FD_t *H5FD__ioc_open(const char *name, unsigned flags,
       file_ptr->fd = HDdup(hdf_file->fd);
       // HDclose(hdf_file->fd);
     }
+	else goto done;
+
 
     /* See: H5FDsubfile_int.c */
-    if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, file_ptr->fd,
-                            ioc_flags) < 0)
+    if (H5FD__open_subfiles((void *)&file_ptr->fa, inode_id, ioc_flags) < 0)
       HGOTO_ERROR(H5E_FILE, H5E_CANTOPENFILE, NULL,
                   "unable to open subfiling files = %s\n", name)
 
     else if (file_ptr->fd > 0) {
       subfiling_context_t *sf_context =
           get__subfiling_object(file_ptr->fa.common.context_id);
-      if (sf_context) {
+      if (sf_context && sf_context->topology->rank_is_ioc) {
         if (initialize_ioc_threads(sf_context) < 0) {
-          HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL,
+          HGOTO_ERROR(H5E_ARGS, H5E_BADVALUE, NULL,
                       "Unable to initialize IOC threads")
         }
       }
@@ -1403,15 +1405,6 @@ done:
   FUNC_LEAVE_NOAPI(ret_value)
 } /* end H5FD__ioc_free() */
 
-static herr_t H5FD__ioc_ctl(H5FD_t *file, uint64_t op_code, uint64_t flags,
-                            const void *input, void **result) {
-  herr_t ret_value = SUCCEED; /* Return value */
-
-  FUNC_ENTER_PACKAGE
-
-done:
-  FUNC_LEAVE_NOAPI(ret_value)
-}
 
 void H5FD_ioc_wait_thread_main(void) { return; }
 
