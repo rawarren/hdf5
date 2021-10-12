@@ -7,6 +7,7 @@ project (HDF5_TOOLS_LIB C)
 
 set (H5_TOOLS_LIB_SOURCES
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff.c
+    ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff_common.c
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff_array.c
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff_attr.c
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff_dset.c
@@ -31,6 +32,7 @@ set (H5_TOOLS_LIB_HDRS
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5tools_str.h
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5tools_ref.h
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff.h
+    ${HDF5_TOOLS_LIB_SOURCE_DIR}/h5diff_common.h
     ${HDF5_TOOLS_LIB_SOURCE_DIR}/io_timer.h
 )
 

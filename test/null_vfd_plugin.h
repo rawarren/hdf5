@@ -1,6 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  * Copyright by The HDF Group.                                               *
- * Copyright by the Board of Trustees of the University of Illinois.         *
  * All rights reserved.                                                      *
  *                                                                           *
  * This file is part of HDF5.  The full HDF5 copyright notice, including     *
@@ -11,25 +10,24 @@
  * help@hdfgroup.org.                                                        *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#ifndef H5DIFFCOMMON_H
-#define H5DIFFCOMMON_H
+/*
+ * Purpose: The public header file for the null testing VFD plugin.
+ */
+#ifndef H5FDnull_H
+#define H5FDnull_H
 
-#include "h5tools.h"
-/* Name of tool */
-#define PROGRAMNAME "h5diff"
+#define H5FD_NULL      (H5FD_null_init())
+#define NULL_VFD_NAME  "null_vfd_plugin"
+#define NULL_VFD_VALUE ((H5FD_class_value_t)200)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void usage(void);
-void parse_command_line(int argc, const char *argv[], const char **fname1, const char **fname2,
-                        const char **objname1, const char **objname2, diff_opt_t *opts);
-void h5diff_exit(int status);
-void print_info(diff_opt_t *opts);
+H5_DLL hid_t H5FD_null_init(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* H5DIFFCOMMON_H */
+#endif

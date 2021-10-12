@@ -1352,13 +1352,13 @@ find_dataset(H5_ATTR_UNUSED hid_t loc_id, const char *name, H5_ATTR_UNUSED const
  * modify the op_data buffer (i.e.: dset_name) during the traversal, and the
  * library never modifies that buffer.
  */
-H5_GCC_DIAG_OFF("cast-qual")
+H5_GCC_CLANG_DIAG_OFF("cast-qual")
 herr_t
 H5LTfind_dataset(hid_t loc_id, const char *dset_name)
 {
     return H5Literate2(loc_id, H5_INDEX_NAME, H5_ITER_INC, 0, find_dataset, (void *)dset_name);
 }
-H5_GCC_DIAG_ON("cast-qual")
+H5_GCC_CLANG_DIAG_ON("cast-qual")
 
 /*-------------------------------------------------------------------------
  *
@@ -1945,13 +1945,13 @@ H5LTfind_attribute(hid_t loc_id, const char *attr_name)
  * modify the op_data buffer (i.e.: attr_name) during the traversal, and the
  * library never modifies that buffer.
  */
-H5_GCC_DIAG_OFF("cast-qual")
+H5_GCC_CLANG_DIAG_OFF("cast-qual")
 herr_t
 H5LT_find_attribute(hid_t loc_id, const char *attr_name)
 {
     return H5Aiterate2(loc_id, H5_INDEX_NAME, H5_ITER_INC, NULL, find_attr, (void *)attr_name);
 }
-H5_GCC_DIAG_ON("cast-qual")
+H5_GCC_CLANG_DIAG_ON("cast-qual")
 
 /*-------------------------------------------------------------------------
  * Function: H5LTget_attribute_ndims
@@ -2206,7 +2206,7 @@ realloc_and_append(hbool_t _no_user_buf, size_t *len, char *buf, const char *str
          */
         if (size_str < *len - 1) {
             if (size_str + size_str_to_add < *len - 1) {
-                HDstrncat(buf, str_to_add, size_str_to_add);
+                HDstrcat(buf, str_to_add);
             }
             else {
                 HDstrncat(buf, str_to_add, (*len - 1) - size_str);

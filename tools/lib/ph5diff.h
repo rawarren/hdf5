@@ -40,4 +40,8 @@ struct diffs_found {
     int     not_cmp;
 };
 
+extern size_t prefix_len;
+extern char * prefix;
+
+
 #endif /* PH5DIFF_H */

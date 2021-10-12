@@ -34,8 +34,8 @@ bin_PROGRAMS=h5diff $(H5PDIFF)
 h5diff_LDFLAGS = $(LT_STATIC_EXEC) $(AM_LDFLAGS)
 
 # Source files for the program
-h5diff_SOURCES=h5diff_main.c h5diff_common.c
-ph5diff_SOURCES=ph5diff_main.c h5diff_common.c
+h5diff_SOURCES=h5diff_main.c
+ph5diff_SOURCES=ph5diff_main.c
 
 # Programs depend on the main HDF5 library and tools library
 LDADD=$(LIBH5TOOLS) $(LIBHDF5)

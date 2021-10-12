@@ -17,6 +17,9 @@
 #include "h5tools.h"
 #include "h5tools_utils.h"
 
+/* Name of tool */
+#define PROGRAMNAME "h5diff"
+
 /*-------------------------------------------------------------------------
  * Function: main
  *
@@ -86,7 +89,7 @@ main(int argc, const char *argv[])
      * process the command-line
      *-------------------------------------------------------------------------
      */
-    parse_command_line(argc, argv, &fname1, &fname2, &objname1, &objname2, &opts);
+    parse_h5diff_command_line(argc, argv, &fname1, &fname2, &objname1, &objname2, &opts);
 
     /* enable error reporting if command line option */
     h5tools_error_report();
@@ -136,26 +139,3 @@ main(int argc, const char *argv[])
     h5diff_exit(ret);
 }
 
-/*-------------------------------------------------------------------------
- * Function: h5diff_exit
- *
- * Purpose: dismiss phdiff worker processes and exit
- *
- * Return: none
- *
- * Programmer: Albert Cheng
- * Date: Feb 6, 2005
- *
- * Comments:
- *
- * Modifications:
- *
- *-------------------------------------------------------------------------
- */
-H5_ATTR_NORETURN void
-h5diff_exit(int status)
-{
-    h5tools_close();
-
-    HDexit(status);
-}
