@@ -44,11 +44,11 @@ H5TOOLS_DLLVAR hsize_t H5TOOLS_BUFSIZE;
 /*struct taken from the dumper. needed in table struct*/
 
 typedef struct dspace_table_t {
-    hid_t       fid;
-    hid_t       space_id;
-	hsize_t     size[H5TOOLS_DUMP_MAX_RANK];
-    hsize_t     maxsize[H5TOOLS_DUMP_MAX_RANK];
-	int         ndims;
+    hid_t   fid;
+    hid_t   space_id;
+    hsize_t size[H5TOOLS_DUMP_MAX_RANK];
+    hsize_t maxsize[H5TOOLS_DUMP_MAX_RANK];
+    int     ndims;
 } ds_table_t;
 
 typedef struct obj_t {
@@ -73,24 +73,24 @@ typedef struct h5tools_table_items_t {
     table_t *     group_table; /* Table of groups */
     table_t *     dset_table;  /* Table of datasets */
     table_t *     type_table;  /* Table of datatypes */
-    ds_table_t *   ds_table;    /* Table of dataset dataspace dimensions (order aligned) */
+    ds_table_t *  ds_table;    /* Table of dataset dataspace dimensions (order aligned) */
 } h5tools_table_items_t;
 
 typedef struct {
-    size_t                nalloc;
-    size_t                nused;
+    size_t                 nalloc;
+    size_t                 nused;
     h5tools_table_items_t *tables;
 } h5tools_table_list_t;
 
 extern h5tools_table_list_t h5tools_table_list;
-extern table_t *h5dump_type_table;
+extern table_t *            h5dump_type_table;
 
 /*this struct stores the information that is passed to the find_objs function*/
 typedef struct find_objs_t {
-    hid_t    fid;
-    table_t *group_table;
-    table_t *type_table;
-    table_t *dset_table;
+    hid_t       fid;
+    table_t *   group_table;
+    table_t *   type_table;
+    table_t *   dset_table;
     ds_table_t *dspace_table;
 } find_objs_t;
 
@@ -100,21 +100,19 @@ H5TOOLS_DLLVAR table_t *h5tools_type_table;
 H5TOOLS_DLLVAR unsigned h5tools_nCols; /*max number of columns for outputting  */
 
 /* Definitions of useful routines */
-H5TOOLS_DLL void   indentation(unsigned);
-H5TOOLS_DLL void   print_version(const char *progname);
-H5TOOLS_DLL void   parallel_print(const char *format, ...);
-H5TOOLS_DLL herr_t parse_tuple(const char *start, int sep, char **cpy_out, unsigned *nelems,
-                               char ***ptrs_out);
-H5TOOLS_DLL void   error_msg(const char *fmt, ...);
-H5TOOLS_DLL void   warn_msg(const char *fmt, ...);
-H5TOOLS_DLL void   help_ref_msg(FILE *output);
-H5TOOLS_DLL void   free_table(table_t *table);
-H5TOOLS_DLL void   h5tools_init_prefix(char **prfx, size_t prfx_len);
-H5TOOLS_DLL void   h5tools_table_list_free(void);
+H5TOOLS_DLL void    indentation(unsigned);
+H5TOOLS_DLL void    print_version(const char *progname);
+H5TOOLS_DLL void    parallel_print(const char *format, ...);
+H5TOOLS_DLL herr_t  parse_tuple(const char *start, int sep, char **cpy_out, unsigned *nelems,
+                                char ***ptrs_out);
+H5TOOLS_DLL void    error_msg(const char *fmt, ...);
+H5TOOLS_DLL void    warn_msg(const char *fmt, ...);
+H5TOOLS_DLL void    help_ref_msg(FILE *output);
+H5TOOLS_DLL void    free_table(table_t *table);
+H5TOOLS_DLL void    h5tools_init_prefix(char **prfx, size_t prfx_len);
+H5TOOLS_DLL void    h5tools_table_list_free(void);
 H5TOOLS_DLL ssize_t h5tools_table_list_visited(unsigned long file_no);
 H5TOOLS_DLL ssize_t h5tools_table_list_add(hid_t oid, unsigned long file_no);
-
-
 
 #ifdef H5DUMP_DEBUG
 H5TOOLS_DLL void dump_tables(find_objs_t *info);
@@ -165,18 +163,18 @@ H5TOOLS_DLL int         h5tools_getstatus(void);
 H5TOOLS_DLL void        h5tools_setstatus(int d_status);
 H5TOOLS_DLL int         h5tools_getenv_update_hyperslab_bufsize(void);
 
-H5TOOLS_DLL void        h5tools_handle_paths(hid_t fid, const char *path_name, void H5_ATTR_UNUSED *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
-H5TOOLS_DLL void        h5tools_handle_attributes(hid_t fid, const char *attr, void H5_ATTR_UNUSED *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
-H5TOOLS_DLL void        h5tools_handle_datasets(hid_t fid, const char *dset, void *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
-H5TOOLS_DLL void        h5tools_handle_groups(hid_t fid, const char *group, void H5_ATTR_UNUSED *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
-H5TOOLS_DLL void        h5tools_handle_links(hid_t fid, const char *links, void H5_ATTR_UNUSED *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
-H5TOOLS_DLL void        h5tools_handle_datatypes(hid_t fid, const char *type, void H5_ATTR_UNUSED *data,
-                                             int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_paths(hid_t fid, const char *path_name, void H5_ATTR_UNUSED *data,
+                                      int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_attributes(hid_t fid, const char *attr, void H5_ATTR_UNUSED *data,
+                                           int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_datasets(hid_t fid, const char *dset, void *data, int H5_ATTR_UNUSED pe,
+                                         const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_groups(hid_t fid, const char *group, void H5_ATTR_UNUSED *data,
+                                       int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_links(hid_t fid, const char *links, void H5_ATTR_UNUSED *data,
+                                      int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
+H5TOOLS_DLL void h5tools_handle_datatypes(hid_t fid, const char *type, void H5_ATTR_UNUSED *data,
+                                          int H5_ATTR_UNUSED pe, const char H5_ATTR_UNUSED *display_name);
 
 #ifdef H5_HAVE_ROS3_VFD
 H5TOOLS_DLL herr_t h5tools_parse_ros3_fapl_tuple(const char *tuple_str, int delim,

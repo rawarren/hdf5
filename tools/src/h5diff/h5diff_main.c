@@ -138,4 +138,3 @@ main(int argc, const char *argv[])
 
     h5diff_exit(ret);
 }
-
